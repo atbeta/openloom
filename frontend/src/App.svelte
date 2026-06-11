@@ -231,7 +231,7 @@
       <div class="panel">
         <div class="panel-header"><h2>Tasks</h2><span class="muted">{tasks.length} total</span></div>
         {#each tasks as task (task.id)}
-          <div class="card" class:selected={selectedTaskId === task.id} onclick={() => selectTask(task.id)}>
+           <div class="card" class:selected={selectedTaskId === task.id} role="button" tabindex="0" onclick={() => selectTask(task.id)} onkeydown={(e) => e.key === 'Enter' && selectTask(task.id)}>
             <div class="card-row">
               <span class="card-title">{task.name || task.id}</span>
               <span class="badge {statusClass(task.status)}">{task.status}</span>
@@ -247,7 +247,7 @@
               <div class="card-actions">
                 <span class="muted">{task.id}</span>
                 {#if task.status !== 'archived' && task.status !== 'completed'}
-                  <button onclick|stopPropagation={() => doArchive(task.id)}>Archive</button>
+                  <button onclick={(e) => { e.stopPropagation(); doArchive(task.id); }}>Archive</button>
                 {/if}
               </div>
             {/if}
@@ -265,7 +265,7 @@
           <div class="section-block">
             <div class="section-label">{dirLabel(dir)} <span class="tag">{compactPath(dir)}</span></div>
             {#each dirSessions as session (session.id)}
-              <div class="card" ondblclick={() => openDrawer(session.id)}>
+               <div class="card" role="button" tabindex="0" ondblclick={() => openDrawer(session.id)} onkeydown={(e) => e.key === 'Enter' && openDrawer(session.id)}>
                 <div class="card-row">
                   <span class="card-title">{session.title || session.id}</span>
                   <span class="dot" class:busy={sessionStatus[session.id] === 'busy'} class:retry={sessionStatus[session.id] === 'retry'}></span>
@@ -287,18 +287,18 @@
       <div class="panel">
         <div class="panel-header"><h2>Dispatch</h2></div>
         <div class="form-group">
-          <label>Workspace (cwd)</label>
-          <input type="text" bind:value={dispatchCwd} placeholder="/path/to/project" />
+          <label for="disp-cwd">Workspace (cwd)</label>
+          <input id="disp-cwd" type="text" bind:value={dispatchCwd} placeholder="/path/to/project" />
         </div>
         <div class="form-group">
-          <label>Agent</label>
-          <select bind:value={dispatchAgent}>
+          <label for="disp-agent">Agent</label>
+          <select id="disp-agent" bind:value={dispatchAgent}>
             <option value="opencode">opencode (default)</option>
           </select>
         </div>
         <div class="form-group">
-          <label>Prompt</label>
-          <textarea bind:value={dispatchPrompt} rows="4" placeholder="What should the agent do?"></textarea>
+          <label for="disp-prompt">Prompt</label>
+          <textarea id="disp-prompt" bind:value={dispatchPrompt} rows="4" placeholder="What should the agent do?"></textarea>
         </div>
         {#if dispatchError}
           <div class="error-msg">{dispatchError}</div>
@@ -312,7 +312,7 @@
 </div>
 
 {#if drawerOpen}
-  <div class="drawer-overlay" onclick={closeDrawer}></div>
+  <div class="drawer-overlay" role="button" tabindex="0" onclick={closeDrawer} onkeydown={(e) => e.key === 'Escape' && closeDrawer()}></div>
   <aside class="drawer">
     <div class="drawer-header">
       <h3>Session {selectedSessionId?.slice(0, 12)}</h3>
@@ -332,6 +332,7 @@
             <div class="msg-text">{messageSummary(msg)}</div>
           </div>
         {:else}
+          <div class="msg-block"><div class="msg-text muted">No messages</div></div>
         {/each}
         {#each drawerDiff as file}
           <div class="diff-file">
@@ -339,6 +340,7 @@
             <div class="diff-stat">+{file.additions || 0} / -{file.deletions || 0}</div>
           </div>
         {:else}
+          <div class="diff-file"><div class="diff-path muted">No changes</div></div>
         {/each}
       {:else}
         <div class="empty">No content</div>
