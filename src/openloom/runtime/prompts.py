@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -346,3 +347,21 @@ def _message_is_aborted(info: dict[str, Any]) -> bool:
         return True
     message = str(error.get("message", "")).lower()
     return "abort" in message or "cancel" in message or "stopped" in message
+
+
+CONFIG_FILENAME = "openloom.yaml"
+
+
+def load_config(path: str | None = None) -> dict[str, Any]:
+    target = path or os.path.join(os.getcwd(), CONFIG_FILENAME)
+    if not os.path.exists(target):
+        raise FileNotFoundError(f"{target} not found. Run 'openloom init' first.")
+    with open(target) as f:
+        data = yaml.safe_load(f)
+    if not isinstance(data, dict):
+        raise ValueError("openloom.yaml must be a YAML mapping")
+    return data
+
+
+def load_task_spec(path: str | None = None) -> TaskSpec:
+    return TaskSpec.from_dict(load_config(path))

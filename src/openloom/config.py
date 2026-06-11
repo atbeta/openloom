@@ -27,17 +27,22 @@ class Settings:
     opencode_url: str
     opencode_username: str
     opencode_password: str
+    database_path: Path
     allowed_roots: list[Path]
     strict_roots: bool
 
     @classmethod
     def from_env(cls) -> Settings:
+        database = Path(os.getenv("OPENLOOM_DATABASE", ".openloom/openloom.sqlite3")).expanduser()
+        if not database.is_absolute():
+            database = Path.cwd() / database
         roots = _split_paths(os.getenv("OPENLOOM_ALLOWED_ROOTS", ""))
 
         return cls(
             opencode_url=os.getenv("OPENLOOM_OPENCODE_URL", "http://127.0.0.1:14096").rstrip("/"),
             opencode_username=os.getenv("OPENLOOM_OPENCODE_USERNAME", "opencode"),
             opencode_password=os.getenv("OPENLOOM_OPENCODE_PASSWORD", "xxx"),
+            database_path=database,
             allowed_roots=roots,
             strict_roots=_env_bool("OPENLOOM_STRICT_ROOTS", default=False),
         )

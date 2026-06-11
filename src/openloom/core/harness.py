@@ -4,6 +4,7 @@ import time
 import uuid
 from typing import Any
 
+from .checker import CheckResult
 from .events import Event, EventBus, EventType
 
 
@@ -12,16 +13,19 @@ class HarnessRunner:
         self,
         opencode: Any,
         bus: EventBus,
+        store: Any,
+        checker: Any,
         prompts: Any,
         status: Any,
         allowed_workspace: Any = None,
     ) -> None:
         self.opencode = opencode
         self.bus = bus
+        self.store = store
+        self.checker = checker
         self.prompts = prompts
         self.status = status
         self.allowed_workspace = allowed_workspace or (lambda _: True)
-        self._tasks: dict[str, dict[str, Any]] = {}
 
     def add_task(self, spec: Any, task_id: str | None = None) -> str:
         if not hasattr(spec, "to_dict"):
@@ -29,9 +33,11 @@ class HarnessRunner:
 
         task_id = task_id or f"task_{uuid.uuid4().hex[:12]}"
         now = time.time()
-        task: dict[str, Any] = {
+        task = {
             "id": task_id,
+            "name": spec.name,
             "spec": spec.to_dict(),
+            "workspace": spec.workspace,
             "status": "pending",
             "current_step": 0,
             "completed_steps": [],
@@ -44,37 +50,40 @@ class HarnessRunner:
             "session_ids": [],
             "last_summary": None,
             "error": None,
+            "check_log": [],
         }
-        self._tasks[task_id] = task
+        result = self.store.create_task(task)
+        sv = result.get("store_version", 0)
+
         self.bus.emit(Event(
             type=EventType.TASK_CREATED,
             task_id=task_id,
+            store_version=sv,
             data={"spec": spec.to_dict(), "workspace": spec.workspace},
         ))
         return task_id
 
     async def tick(self) -> None:
-        now = time.time()
-        due = [
-            t for t in self._tasks.values()
-            if t["status"] in ("pending", "running", "waiting")
-            and (t["next_check_at"] is None or t["next_check_at"] <= now)
-        ]
+        due = self.store.list_due_tasks()
         for task in due:
             try:
-                await self._check_task(task, now=now)
+                await self._check_task(task)
             except Exception as exc:  # noqa: BLE001
+                sv = self.store.update_task(task["id"], status="failed", error=str(exc))
+                self.store.append_check_log(
+                    task["id"], status="failed", summary="Harness check failed", detail=str(exc),
+                )
                 self.bus.emit(Event(
                     type=EventType.TASK_FAILED,
                     task_id=task["id"],
+                    store_version=sv,
                     data={"error": str(exc), "summary": "Harness check failed"},
                 ))
-                task["status"] = "failed"
-                task["error"] = str(exc)
 
-    async def _check_task(self, task: dict[str, Any], *, now: float) -> None:
+    async def _check_task(self, task: dict[str, Any]) -> None:
         task_id = task["id"]
         spec_data = task["spec"]
+        now = time.time()
 
         if task["status"] == "pending":
             await self._start_task(task)
@@ -88,25 +97,26 @@ class HarnessRunner:
             await self._start_task(task)
             return
 
-        live_raw = await self.opencode.session_status()
-        live = live_raw.get(session_id)
-
         spec = self.prompts.TaskSpec.from_dict(spec_data)
 
+        live_raw = await self.opencode.session_status()
+        live = live_raw.get(session_id)
         status_text = self.status.normalize_session_status(live) or ""
+
         messages = await self.opencode.messages(session_id, limit=50)
-        progress = self.prompts.detect_progress_from_messages(messages, spec)
         is_busy = self.prompts.messages_indicate_busy(messages)
 
+        result: CheckResult = self.checker.check(messages, spec_data)
+
         current_step = int(task.get("current_step") or 0)
-        if progress["step_done"] > 0:
-            current_step = max(current_step, min(progress["step_done"], len(spec.steps) - 1))
+        if result.step_done > 0:
+            current_step = max(current_step, min(result.step_done, len(spec.steps) - 1))
 
         completed_steps = list(task.get("completed_steps") or [])
-        all_steps_reported = len(spec.steps) > 0 and progress["step_done"] >= len(spec.steps)
+        all_steps_reported = len(spec.steps) > 0 and result.step_done >= len(spec.steps)
         task_finished = (
-            progress["task_complete"]
-            or (spec.acceptance and progress["acceptance_checked"] >= len(spec.acceptance))
+            result.task_complete
+            or (spec.acceptance and result.acceptance_checked >= len(spec.acceptance))
             or all_steps_reported
         )
 
@@ -118,7 +128,7 @@ class HarnessRunner:
             summary = "Waiting for permission or input"
         elif task_finished:
             status = "completed"
-            summary = "Agent reported TASK COMPLETE" if progress["task_complete"] else "All steps appear complete"
+            summary = "Agent reported TASK COMPLETE" if result.task_complete else "All steps appear complete"
         else:
             status = "running"
             summary = "Session idle — verifying progress"
@@ -134,11 +144,11 @@ class HarnessRunner:
                 )
                 summary = f"Auto-continued to step {current_step + 1}"
             elif (
-                progress["step_done"] > 0
-                and progress["step_done"] not in completed_steps
+                result.step_done > 0
+                and result.step_done not in completed_steps
                 and current_step < len(spec.steps) - 1
             ):
-                next_index = min(progress["step_done"], len(spec.steps) - 1)
+                next_index = min(result.step_done, len(spec.steps) - 1)
                 nudge = (
                     f"Continue harness task '{spec.name}'. "
                     f"Focus on step {next_index + 1}: {spec.steps[next_index]}. "
@@ -151,7 +161,13 @@ class HarnessRunner:
                 nudge = self.prompts.build_periodic_check_prompt(
                     spec,
                     current_step=current_step,
-                    progress=progress,
+                    progress={
+                        "task_complete": result.task_complete,
+                        "step_done": result.step_done,
+                        "acceptance_checked": result.acceptance_checked,
+                        "acceptance_total": result.acceptance_total,
+                        "acceptance_progress": result.acceptance_progress,
+                    },
                     completed_steps=completed_steps,
                 )
                 summary = "Periodic check — requested status confirmation"
@@ -163,8 +179,8 @@ class HarnessRunner:
                     agent=agent_name,
                 )
 
-        if progress["step_done"] > 0 and progress["step_done"] not in completed_steps:
-            completed_steps.append(progress["step_done"])
+        if result.step_done > 0 and result.step_done not in completed_steps:
+            completed_steps.append(result.step_done)
 
         total_steps = len(spec.steps)
         if status == "completed":
@@ -183,18 +199,23 @@ class HarnessRunner:
         interval = int(task.get("check_interval_seconds", 300))
         next_check = None if status in ("completed", "failed", "archived") else now + interval
 
-        task["status"] = status
-        task["current_step"] = current_step
-        task["completed_steps"] = completed_steps
-        task["idle_checks"] = idle_checks
-        task["progress"] = step_progress
-        task["last_check_at"] = now
-        task["next_check_at"] = next_check
-        task["last_summary"] = summary
+        sv = self.store.update_task(
+            task_id,
+            status=status,
+            current_step=current_step,
+            completed_steps=completed_steps,
+            idle_checks=idle_checks,
+            progress=step_progress,
+            last_check_at=now,
+            next_check_at=next_check,
+            last_summary=summary,
+        )
+        self.store.append_check_log(task_id, status=status, summary=summary, detail=status_text)
 
         self.bus.emit(Event(
             type=EventType.TASK_UPDATED,
             task_id=task_id,
+            store_version=sv,
             data={
                 "status": status,
                 "current_step": current_step,
@@ -207,19 +228,21 @@ class HarnessRunner:
             self.bus.emit(Event(
                 type=EventType.TASK_COMPLETED,
                 task_id=task_id,
+                store_version=sv,
                 data={"summary": summary, "progress": step_progress},
             ))
         elif status == "failed":
             self.bus.emit(Event(
                 type=EventType.TASK_FAILED,
                 task_id=task_id,
+                store_version=sv,
                 data={"summary": summary},
             ))
 
     async def _start_task(self, task: dict[str, Any]) -> None:
         task_id = task["id"]
-
         spec = self.prompts.TaskSpec.from_dict(task["spec"])
+
         if not self.allowed_workspace(spec.workspace):
             raise ValueError("Workspace is outside allowed roots")
 
@@ -237,21 +260,32 @@ class HarnessRunner:
             session_ids.append(session_id)
 
         now = time.time()
-        task["status"] = "running"
-        task["active_session_id"] = session_id
-        task["session_ids"] = session_ids
-        task["last_check_at"] = now
-        task["next_check_at"] = now + spec.check_interval_seconds
-        task["error"] = None
+        sv = self.store.update_task(
+            task_id,
+            status="running",
+            active_session_id=session_id,
+            session_ids=session_ids,
+            last_check_at=now,
+            next_check_at=now + spec.check_interval_seconds,
+            error=None,
+        )
+        self.store.append_check_log(
+            task_id,
+            status="running",
+            summary="Harness started and bootstrap prompt sent",
+            detail=f"session={session_id}",
+        )
 
         self.bus.emit(Event(
             type=EventType.TASK_STARTED,
             task_id=task_id,
+            store_version=sv,
             data={"session_id": session_id},
         ))
         self.bus.emit(Event(
             type=EventType.LOG_LINE,
             task_id=task_id,
+            store_version=sv,
             data={
                 "status": "running",
                 "summary": "Harness started and bootstrap prompt sent",
@@ -260,7 +294,7 @@ class HarnessRunner:
         ))
 
     def get_task(self, task_id: str) -> dict[str, Any] | None:
-        return self._tasks.get(task_id)
+        return self.store.get_task(task_id)
 
     def list_tasks(self) -> list[dict[str, Any]]:
-        return sorted(self._tasks.values(), key=lambda t: t.get("next_check_at") or 0)
+        return self.store.list_tasks()
