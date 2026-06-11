@@ -27,7 +27,10 @@ venv/
 # Frontend
 frontend/node_modules/
 frontend/dist/
-src/openloom/server/static/app/
+# Note: src/openloom/server/static/app/ is INTENTIONALLY committed.
+# It contains the OpenDeck pre-built SPA so `openloom serve` works
+# without a separate `npm run build` step. Regenerate via
+# `cp opencode-deck/frontend/dist/* src/openloom/server/static/app/`.
 
 # Hatch
 *.egg
