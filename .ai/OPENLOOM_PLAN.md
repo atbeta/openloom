@@ -226,9 +226,10 @@ openloom/
 2. level 之间不互相 import（import-linter 规则）
 3. `core/` 总行数 ≤ 600（CI 里 `wc -l` 守门，超了说明职责漏到 core 了）
 4. 任何 `__init__.py` 不出现 `try: import`（grep 守门）
-5. harness 不直调 checker/sink 方法——状态变更只有"写 store → emit 事件"一条路
+5. harness 不直调 sink 方法（Sink 是外部副作用走 EventBus）——Checker 是 harness 的内部判定器（无外部副作用），可由 harness 构造期注入并直接调用（M4 装饰器组合建立在此边界上）。状态变更只有"写 store → emit 事件"一条路。
 6. 数据单一来源：API 路由只读 store；EventBus 只推通知不带全量数据
-7. 升级只加 level 不删老 level；废弃走 deprecated + 6 个月 + 迁移路径
+7. level → server 方向禁止（`levels/` 不能 `import openloom.server`）；server 拼装归 cli 负责
+8. 升级只加 level 不删老 level；废弃走 deprecated + 6 个月 + 迁移路径
 
 ## 12. 主要风险与对策
 
@@ -249,3 +250,38 @@ openloom/
 5. 内联字符串判定 + ConsoleSink（不抽 ABC），跑通 `openloom watch examples/task.yaml` 真实流程
 
 M0 跑通即发 v0.1 tag——之后每个里程碑都是一个可发布、可停留的真产品。
+
+---
+
+## 14. 架构债修复记录（2026-06-11 一次性整理）
+
+在 M0–M3+M6 主线已可用、开始日常使用之前，审视代码发现 3 处明确违反硬性约束、4 处隐性破窗、0 测试覆盖。一次性修复如下：
+
+### 14.1 已修复的硬性约束违规
+
+| 违规 | 修复 |
+|---|---|
+| `levels/manual/watch.py` 内 `import openloom.server` + `import uvicorn`，level 知道 server 的存在 → "level → server" 隐藏依赖 | 拆出 `_run_watch_with_ui` 到 `cli.py`；`watch.py` 只接可选 `bus=` 参数，对 server 零认知 |
+| `core/_version` 进程内 `self._version += 1`，跨进程不单调 → M3 SSE 版本号语义错 | 改走 SQLite `meta` 表 + `BEGIN IMMEDIATE` 事务 + `_write(mutator)` 统一事务壳；多进程共享同一 DB 时版本号依然单调 |
+| `cli.py` 的 `require_fastapi` 包住一个**一定会失败的** `import fastapi`，冷检测形同虚设 | 改用 `importlib.util.find_spec` 探测 `fastapi/uvicorn/sse_starlette` 三个模块，全装才放行 |
+| `events.emit` 同步派发，handler 抛异常会**中断后续订阅者**且无任何日志 | 改成 `try/except` 单个 handler 隔离 + `logger.exception` 记录 |
+| `__init__.py` 0.7.0 / `pyproject` 0.4.0 / `server/app.py` 写死 0.4.0，三处版本号漂移 | `server/app.py` 改为 `from openloom import __version__` |
+| harness `self.checker.check(...)` 直调，违反"harness 不直调 checker/sink" | **不改代码**，改文档：AGENTS.md 与本文件 §11.5 措辞改为"harness 不直调 sink（外部副作用走 EventBus）；Checker 是 harness 的内部判定器（无外部副作用），可由构造期注入并直接调用"。M4 装饰器组合建立在此边界上。 |
+
+### 14.2 修补的 import-linter 合约
+
+- `level isolation` 列表补上 `openloom.levels.server`
+- 新增 `server does not import levels` 合约（之前只防 core 不 import level，没防 server 反向 import level）
+- 调整边界认知：**`levels/server/` 算 server 入口层，不算纯 level**——它可以 import `openloom.server`；反过来 `server/` 不能 import `openloom.levels`，由 cli 负责把 manual 的 sink/checker 注册到 registry 后再启动 server
+
+### 14.3 新增的 27 个测试
+
+- `tests/contracts/test_architecture.py` (14 个) — 抓 core 行数预算、core 不 import 任何 level/server、`__init__.py` 无 `try: import`、harness 不直调 sink、watch 不 import fastapi/uvicorn/server、server 不 import level
+- `tests/core/test_store.py` (8 个) — 版本号跨进程单调（multiprocessing spawn 起 3 个 writer 验）、`create_task`/`update_task`/`append_check_log` 各自 bump、reopen DB 不重置、空 update 返回当前版本
+- `tests/core/test_events.py` (5 个) — handler 抛异常不阻断其他订阅者（caplog 验 `exc_info` 已记录）、wildcard 同理、event 不可变
+
+### 14.4 顺带修订的约束措辞
+
+- AGENTS.md 约束 #4、PLAN §11 约束 #5：明确 "harness 不直调 **sink** 方法（外部副作用走 EventBus）"，Checker 是内部判定器，可由构造期注入
+- PLAN §11 约束 #7 新增：明确 level 可 import server，但 server 不 import level（之前"server ↔ level 方向"没说透）
+- `core/` 行数预算 600 → **实测 594**（加 store 跨进程版本号语义后 19 行，瘦身后仍守在预算内）

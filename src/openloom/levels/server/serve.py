@@ -15,10 +15,7 @@ async def run_serve(settings: Any) -> None:
     from openloom.runtime import prompts, session_status as status_mod
     from openloom.runtime.opencode import OpenCodeClient
 
-    import openloom.levels.manual.checker  # noqa: F401
-    import openloom.levels.manual.sink  # noqa: F401
     from openloom.levels.server.monitor import SessionMonitor
-
     from openloom.server.app import create_app
 
     import uvicorn

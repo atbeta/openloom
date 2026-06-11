@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import importlib.util
 import sys
+from typing import Any
 
 from openloom.config import Settings
+from openloom.core.events import EventBus
 from openloom.core.store import Store
 
 
@@ -18,6 +21,57 @@ def _print_table(headers: list[str], rows: list[list[str]]) -> None:
     print(fmt.format(*["─" * w for w in col_widths]))
     for row in rows:
         print(fmt.format(*[str(c) for c in row]))
+
+
+def _web_extras_available() -> bool:
+    return all(
+        importlib.util.find_spec(name) is not None
+        for name in ("fastapi", "uvicorn", "sse_starlette")
+    )
+
+
+def _require_web_extras() -> None:
+    if not _web_extras_available():
+        raise ImportError(
+            "Web UI requires FastAPI extras. Install with: pip install openloom[ui]"
+        )
+
+
+async def _run_watch_with_ui(
+    spec: str | None,
+    settings: Settings,
+    web_sink: Any,
+    *,
+    store_path: str,
+) -> None:
+    from openloom.server.app import create_app
+    import uvicorn
+    from openloom.levels.manual.watch import run_watch
+
+    store = Store(store_path)
+    bus = EventBus()
+    bus.subscribe_all(web_sink.on_event)
+
+    app = create_app(harness=None, store=store, bus=bus, web_sink=web_sink)
+    config = uvicorn.Config(
+        app, host=settings.ui_host, port=settings.ui_port, log_level="warning"
+    )
+    server = uvicorn.Server(config)
+    server_task = asyncio.create_task(server.serve())
+
+    try:
+        await run_watch(
+            spec,
+            settings,
+            store_path=store_path,
+            bus=bus,
+            web_sink=web_sink,
+        )
+    finally:
+        server.should_exit = True
+        server_task.cancel()
+        with asyncio.suppress(asyncio.CancelledError):
+            await server_task
 
 
 def main() -> None:
@@ -57,31 +111,29 @@ def main() -> None:
             sys.exit(1)
 
     elif args.command == "watch":
-        from openloom.levels.manual.watch import run_watch
-
-        web_sink = None
+        store_path = str(settings.database_path)
         if args.ui:
-            from openloom.server.cold import require_fastapi
             try:
-                require_fastapi()
+                _require_web_extras()
             except ImportError as e:
                 print(f"ERROR: {e}")
                 sys.exit(1)
-            import openloom.levels.ui.sink  # noqa: F401
             from openloom.levels.ui.sink import WebSink
-            web_sink = WebSink()
 
-        asyncio.run(run_watch(args.spec, settings, ui=args.ui, web_sink=web_sink, store_path=str(settings.database_path)))
+            web_sink = WebSink()
+            asyncio.run(
+                _run_watch_with_ui(
+                    args.spec, settings, web_sink, store_path=store_path
+                )
+            )
+        else:
+            from openloom.levels.manual.watch import run_watch
+
+            asyncio.run(run_watch(args.spec, settings, store_path=store_path))
 
     elif args.command == "serve":
-        from openloom.server.cold import require_fastapi
-        try:
-            require_fastapi()
-        except ImportError as e:
-            print(f"ERROR: {e}")
-            sys.exit(1)
-
-        import openloom.levels.ui.sink  # noqa: F401 — trigger registry
+        import openloom.levels.manual.checker  # noqa: F401
+        import openloom.levels.manual.sink  # noqa: F401
         from openloom.levels.server.serve import run_serve
 
         if args.host:
@@ -128,6 +180,8 @@ def main() -> None:
         _print_table(headers, rows)
 
     elif args.command == "log":
+        import datetime
+
         store = Store(settings.database_path)
         prefix = args.task_id
         tasks = store.list_tasks()
@@ -142,7 +196,6 @@ def main() -> None:
         log = task.get("check_log") or []
         for entry in log[-20:]:
             ts = entry.get("at", 0)
-            import datetime
             dt = datetime.datetime.fromtimestamp(ts).strftime("%H:%M:%S")
             print(f"  [{dt}] {entry.get('status', '')}")
             print(f"         {entry.get('summary', '')}")

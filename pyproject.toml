@@ -56,3 +56,17 @@ modules = [
   "openloom.levels.server",
 ]
 message = "Levels must not import from each other"
+
+[[tool.importlinter.contracts]]
+name = "server does not import levels"
+type = "forbidden"
+source_modules = ["openloom.server"]
+forbidden_modules = [
+  "openloom.levels",
+  "openloom.levels.manual",
+  "openloom.levels.config",
+  "openloom.levels.openspec",
+  "openloom.levels.ui",
+  "openloom.levels.server",
+]
+message = "server/ must be level-agnostic — it consumes core/ + runtime/ only"

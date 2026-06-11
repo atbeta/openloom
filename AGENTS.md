@@ -37,7 +37,7 @@ tests/contracts/ # 架构守门测试
 1. `core/` 不 import 本包任何其他子包（levels / runtime / server）；总行数 ≤ 600。
 2. levels 之间互不 import；共用代码上提到 `runtime/` 或 `server/`。
 3. 任何 `__init__.py` 禁止 `try: import` 可选依赖——用冷检测函数（现场 try import、不缓存）。
-4. Harness 不直调 checker/sink 方法：状态变更唯一路径 = 写 store（store_version +1）→ emit 事件。
+4. Harness 不直调 sink 方法：状态变更唯一路径 = 写 store（store_version +1）→ emit 事件。Checker 是 harness 的内部判定器（无外部副作用），可以由 harness 构造期注入并直接调用 —— M4 的 PreArchiveChecker 装饰器正是建立在这个边界上。
 5. API 路由只读 store；EventBus 只推通知不带全量数据。
 6. 主依赖仅 `httpx` + `pyyaml`；fastapi/uvicorn 等一律走 extras（`[ui]` / `[server]`）。
 7. 组合用装饰器（`checker.with_pre_archive(...)`）不用继承。

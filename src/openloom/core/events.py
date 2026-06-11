@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import logging
 import time
 from collections import defaultdict
 from dataclasses import dataclass, field
 from enum import Enum, auto
 from typing import Any, Callable
 
-Handler = Callable[["Event"], None]
+_logger = logging.getLogger("openloom.events")
 
 
 class EventType(Enum):
@@ -29,17 +30,18 @@ class Event:
 
 class EventBus:
     def __init__(self) -> None:
-        self._subscribers: dict[EventType, list[Handler]] = defaultdict(list)
-        self._wildcards: list[Handler] = []
+        self._subscribers: dict[EventType, list[Callable[[Event], None]]] = defaultdict(list)
+        self._wildcards: list[Callable[[Event], None]] = []
 
-    def subscribe(self, event_type: EventType, handler: Handler) -> None:
+    def subscribe(self, event_type: EventType, handler: Callable[[Event], None]) -> None:
         self._subscribers[event_type].append(handler)
 
-    def subscribe_all(self, handler: Handler) -> None:
+    def subscribe_all(self, handler: Callable[[Event], None]) -> None:
         self._wildcards.append(handler)
 
     def emit(self, event: Event) -> None:
-        for handler in self._subscribers.get(event.type, ()):
-            handler(event)
-        for handler in self._wildcards:
-            handler(event)
+        for handler in (*self._subscribers.get(event.type, ()), *self._wildcards):
+            try:
+                handler(event)
+            except Exception:
+                _logger.exception("Event handler %r failed for %s", handler, event.type.name)

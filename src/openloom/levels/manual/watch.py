@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
 from typing import Any
 
 from openloom.core.events import EventBus
@@ -20,9 +19,9 @@ async def run_watch(
     spec_path: str | None,
     settings: Any,
     *,
-    ui: bool = False,
     store_path: str | None = None,
     web_sink: Any = None,
+    bus: Any = None,
 ) -> None:
     source_cls = get_source("manual")
     source = source_cls()
@@ -39,18 +38,12 @@ async def run_watch(
         print(f"ERROR: OpenCode server not reachable: {health.message}")
         return
 
-    db_path = Path(store_path) if store_path else settings.database_path
+    db_path = store_path or str(settings.database_path)
     store = Store(db_path)
-    bus = EventBus()
+    bus = bus if bus is not None else EventBus()
 
-    if ui and web_sink:
+    if web_sink is not None:
         bus.subscribe_all(web_sink.on_event)
-        from openloom.server.app import create_app
-        app = create_app(harness=None, store=store, bus=bus, web_sink=web_sink)
-        import uvicorn
-        config = uvicorn.Config(app, host=settings.ui_host, port=settings.ui_port, log_level="warning")
-        server = uvicorn.Server(config)
-        asyncio.create_task(server.serve())
 
     sink_cls = get_sink("console")
     sink = sink_cls()
@@ -76,8 +69,6 @@ async def run_watch(
     print(f"openloom: watching {task_id[:12]} — {spec_name}")
     print(f"  workspace: {first_spec.get('workspace', '?')}")
     print(f"  interval:  {first_spec.get('check_interval_seconds', 300)}s")
-    if ui:
-        print(f"  ui:        http://{settings.ui_host}:{settings.ui_port}")
     print()
 
     try:
@@ -90,4 +81,3 @@ async def run_watch(
             await asyncio.sleep(5)
     except KeyboardInterrupt:
         print("\nopenloom: interrupted (task may still run in OpenCode)")
-

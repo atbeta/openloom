@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from openloom import __version__
 from openloom.server.cold import require_fastapi
 
 
@@ -14,7 +15,7 @@ def create_app(harness: Any, store: Any, bus: Any, web_sink: Any, *, client: Any
     from fastapi.responses import FileResponse
     from fastapi.staticfiles import StaticFiles
 
-    app = FastAPI(title="OpenLoom", version="0.4.0")
+    app = FastAPI(title="OpenLoom", version=__version__)
 
     app.add_middleware(
         CORSMiddleware,

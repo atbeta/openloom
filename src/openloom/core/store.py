@@ -5,7 +5,7 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 class Store:
@@ -13,7 +13,6 @@ class Store:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
-        self._version: int = 0
         self._init()
 
     def _connect(self) -> sqlite3.Connection:
@@ -22,43 +21,57 @@ class Store:
         return conn
 
     def _init(self) -> None:
-        with self._connect() as conn:
-            conn.execute(
-                """CREATE TABLE IF NOT EXISTS tasks (
-                  id TEXT PRIMARY KEY, name TEXT NOT NULL, spec_json TEXT NOT NULL,
-                  workspace TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',
-                  current_step INTEGER NOT NULL DEFAULT 0,
-                  session_ids_json TEXT NOT NULL DEFAULT '[]',
-                  active_session_id TEXT, check_interval_seconds INTEGER NOT NULL DEFAULT 300,
-                  completed_steps_json TEXT NOT NULL DEFAULT '[]',
-                  idle_checks INTEGER NOT NULL DEFAULT 0,
-                  progress REAL NOT NULL DEFAULT 0,
-                  check_log_json TEXT NOT NULL DEFAULT '[]',
-                  last_summary TEXT, error TEXT,
-                  last_check_at REAL, next_check_at REAL,
-                  created_at REAL NOT NULL, updated_at REAL NOT NULL
-                )"""
+        with self._lock, self._connect() as conn:
+            conn.executescript(
+                "CREATE TABLE IF NOT EXISTS tasks ("
+                "id TEXT PRIMARY KEY, name TEXT NOT NULL, spec_json TEXT NOT NULL,"
+                "workspace TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',"
+                "current_step INTEGER NOT NULL DEFAULT 0,"
+                "session_ids_json TEXT NOT NULL DEFAULT '[]',"
+                "active_session_id TEXT, check_interval_seconds INTEGER NOT NULL DEFAULT 300,"
+                "completed_steps_json TEXT NOT NULL DEFAULT '[]',"
+                "idle_checks INTEGER NOT NULL DEFAULT 0, progress REAL NOT NULL DEFAULT 0,"
+                "check_log_json TEXT NOT NULL DEFAULT '[]',"
+                "last_summary TEXT, error TEXT, last_check_at REAL, next_check_at REAL,"
+                "created_at REAL NOT NULL, updated_at REAL NOT NULL);"
+                "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
+                "INSERT OR IGNORE INTO meta(key, value) VALUES ('store_version', '0');"
             )
+            conn.commit()
 
     @property
     def store_version(self) -> int:
-        return self._version
+        with self._lock, self._connect() as conn:
+            row = conn.execute("SELECT value FROM meta WHERE key = 'store_version'").fetchone()
+        return int(row["value"]) if row else 0
 
-    def _bump(self) -> int:
-        self._version += 1
-        return self._version
+    def _write(self, mutator: Callable[[sqlite3.Connection], None]) -> int:
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                mutator(conn)
+                conn.execute(
+                    "UPDATE meta SET value = CAST(value AS INTEGER) + 1 "
+                    "WHERE key = 'store_version'"
+                )
+                row = conn.execute("SELECT value FROM meta WHERE key = 'store_version'").fetchone()
+                version = int(row["value"]) if row else 0
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return version
 
     def create_task(self, task: dict[str, Any]) -> dict[str, Any]:
         now = time.time()
-        version = self._bump()
-        with self._connect() as conn:
+
+        def mutator(conn: sqlite3.Connection) -> None:
             conn.execute(
-                """INSERT INTO tasks (
-                  id, name, spec_json, workspace, status, current_step,
-                  session_ids_json, active_session_id, check_interval_seconds,
-                  completed_steps_json, idle_checks, progress, check_log_json,
-                  last_summary, error, last_check_at, next_check_at, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                "INSERT INTO tasks (id, name, spec_json, workspace, status, current_step,"
+                "session_ids_json, active_session_id, check_interval_seconds,"
+                "completed_steps_json, idle_checks, progress, check_log_json,"
+                "last_summary, error, last_check_at, next_check_at, created_at, updated_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (task["id"], task.get("name", ""), json.dumps(task.get("spec", {}), ensure_ascii=False),
                  task.get("workspace", ""), task.get("status", "pending"),
                  int(task.get("current_step") or 0), json.dumps(task.get("session_ids") or [], ensure_ascii=False),
@@ -69,26 +82,26 @@ class Store:
                  task.get("last_summary"), task.get("error"), task.get("last_check_at"),
                  task.get("next_check_at", now), now, now),
             )
-        return {"store_version": version}
+
+        return {"store_version": self._write(mutator)}
 
     def update_task(self, task_id: str, **fields: Any) -> int:
         if not fields:
-            return self._version
+            return self.store_version
         json_map = {"spec": "spec_json", "session_ids": "session_ids_json",
                      "completed_steps": "completed_steps_json", "check_log": "check_log_json"}
-        normalized: dict[str, Any] = {}
-        for key, value in fields.items():
-            if key in json_map:
-                normalized[json_map[key]] = json.dumps(value, ensure_ascii=False)
-            else:
-                normalized[key] = value
+        normalized = {
+            (json_map[k] if k in json_map else k): (json.dumps(v, ensure_ascii=False) if k in json_map else v)
+            for k, v in fields.items()
+        }
         normalized["updated_at"] = time.time()
         assignments = ", ".join(f"{k} = ?" for k in normalized)
         values = list(normalized.values()) + [task_id]
-        version = self._bump()
-        with self._connect() as conn:
+
+        def mutator(conn: sqlite3.Connection) -> None:
             conn.execute(f"UPDATE tasks SET {assignments} WHERE id = ?", values)
-        return version
+
+        return self._write(mutator)
 
     def get_task(self, task_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:
@@ -97,30 +110,36 @@ class Store:
 
     def list_tasks(self, limit: int = 50) -> list[dict[str, Any]]:
         with self._connect() as conn:
-            rows = conn.execute(
-                "SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", (limit,)
-            ).fetchall()
+            rows = conn.execute("SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
         return [self._row_to_task(row) for row in rows]
 
     def list_due_tasks(self, limit: int = 20) -> list[dict[str, Any]]:
         now = time.time()
         with self._connect() as conn:
             rows = conn.execute(
-                """SELECT * FROM tasks
-                WHERE status IN ('pending', 'running', 'waiting')
-                  AND (next_check_at IS NULL OR next_check_at <= ?)
-                ORDER BY COALESCE(next_check_at, 0) ASC LIMIT ?""",
+                "SELECT * FROM tasks WHERE status IN ('pending', 'running', 'waiting')"
+                " AND (next_check_at IS NULL OR next_check_at <= ?)"
+                " ORDER BY COALESCE(next_check_at, 0) ASC LIMIT ?",
                 (now, limit),
             ).fetchall()
         return [self._row_to_task(row) for row in rows]
 
     def append_check_log(self, task_id: str, *, status: str, summary: str, detail: str = "") -> int:
-        task = self.get_task(task_id)
-        if not task:
-            return self._version
-        log = list(task.get("check_log") or [])
-        log.append({"at": time.time(), "status": status, "summary": summary, "detail": detail[:2000]})
-        return self.update_task(task_id, check_log=log[-100:], last_summary=summary)
+        with self._lock, self._connect() as conn:
+            row = conn.execute("SELECT check_log_json FROM tasks WHERE id = ?", (task_id,)).fetchone()
+            if not row:
+                return self.store_version
+            log = list(json.loads(row["check_log_json"] or "[]"))
+            log.append({"at": time.time(), "status": status, "summary": summary, "detail": detail[:2000]})
+            log_json = json.dumps(log[-100:], ensure_ascii=False)
+
+        def mutator(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "UPDATE tasks SET check_log_json = ?, last_summary = ?, updated_at = ? WHERE id = ?",
+                (log_json, summary, time.time(), task_id),
+            )
+
+        return self._write(mutator)
 
     def _row_to_task(self, row: sqlite3.Row) -> dict[str, Any]:
         item = dict(row)
