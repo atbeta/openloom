@@ -42,7 +42,11 @@ openloom/
 
 ## 2. 里程碑总览
 
-按 INTEGRATION.md §9 的行动顺序展开，每个里程碑都是**可独立交付的真产品**：
+按 INTEGRATION.md §9 的行动顺序展开，每个里程碑都是**可独立交付的真产品**。
+
+> **顺序调整（2026-06-11）**：优先"自己用起来"——M0→M1→M2→M3 后直接做 M6（deck 观测台回归并日常使用），**M4 / M5 / M7 搁置回补**。架构上 M6 只依赖 M1 的 store、M2 的 registry、M3 的 `create_app` + Sink ABC，跳过 M4/M5 无障碍。
+
+**主线（当前执行）**：
 
 | 里程碑 | 版本 | 对应 Level | 核心交付 | 新增代码（估） | 复用 |
 |---|---|---|---|---|---|
@@ -50,12 +54,17 @@ openloom/
 | M1 | v0.2 | L1 | `openloom init` 生成 YAML、SQLite store（含 store_version）、抽出 Checker ABC | +400 行 | deck task_spec / store |
 | M2 | v0.3 | L2 | `openloom[openspec]`：OpenSpecSource + OpenSpecChecker、显式注册表、冷检测 | +400 行 | — |
 | M3 | v0.4 | L3 | `openloom watch --ui`：Sink ABC + WebSink、FastAPI + SSE、单文件前端 | +450 行 | deck routes / 前端思路 |
-| M4 | v0.5 | L4 | `openloom[validate]`：PreArchiveChecker 装饰器（pytest / mypy / git diff 闸门） | +500 行 | — |
-| M5 | v0.6 | L5 | **（延后）** `openloom[github]`：GitHubSource | +600 行 | — |
-| M6 | v0.7 | L6 | `openloom serve`：双进程模式 + Svelte 完整观测台（deck 功能回归） | +800 行 | deck main.py / frontend / status_stream |
-| M7 | v0.8 | L7 | 插件 API 文档化 + `openloom-plugin-dingtalk` 示例（即 L8 测试） | +400 行 | — |
+| M6 | v0.5 | L6 | `openloom serve`：双进程模式 + Svelte 完整观测台（deck 功能回归） | +800 行 | deck main.py / frontend / status_stream |
 
-下面逐个展开。
+**回补线（搁置，进入日常使用后按需启动）**：
+
+| 里程碑 | 版本 | 对应 Level | 核心交付 | 搁置的连带影响 |
+|---|---|---|---|---|
+| M4 | v0.6 | L4 | `openloom[validate]`：PreArchiveChecker 装饰器（pytest / mypy / git diff 闸门） | 误判率停留在 L2 的 ~8%；日常使用期间记录误判样本，回补时即实测数据 |
+| M5 | v0.7 | L5 | `openloom[github]`：GitHubSource + GitHubSink | Sink ABC 少一次第三方验证，与 M7 一起回补 |
+| M7 | v0.8 | L7 | 插件 API 文档化 + `openloom-plugin-dingtalk` 示例（即 L8 测试） | v1.0 门槛不变：L8 测试通过才发 1.0 |
+
+下面逐个展开（M4 / M5 / M7 章节保留设计内容，作为回补时的依据）。
 
 ---
 
@@ -150,7 +159,7 @@ openloom/
 
 ---
 
-## 7. M4（v0.5）— L4：预归档校验（装饰器模式验证）
+## 7. M4（v0.6，回补项）— L4：预归档校验（装饰器模式验证）
 
 **用户故事**："Agent 改完文件没跑测试就报完成"→ 归档前强制 `pytest -q` / `git diff --stat` 非空 / `mypy`，任一失败 → 不归档、标 failed。误判率 8% → <1%。
 
@@ -169,7 +178,7 @@ openloom/
 
 ---
 
-## 8. M5（v0.6）— L5：GitHub 源
+## 8. M5（v0.7，回补项）— L5：GitHub 源
 
 > **状态：延后**。理由：写权限（PR/comment）实际工作量预估远超 +600 行，且与无人值守核心价值不直接相关，优先 M0–M4 跑通验证架构。重新排期前需要先回答"读侧（label → task）够不够用、写侧要不要拆 v0.6.x 小步"。
 
@@ -181,7 +190,7 @@ openloom/
 
 ---
 
-## 9. M6（v0.7）— L6：服务器模式（opencode-deck 全功能回归）
+## 9. M6（v0.5，主线收尾）— L6：服务器模式（opencode-deck 全功能回归）
 
 **这一步把 deck 的观测台正式吸收进 OpenLoom**：
 
@@ -199,7 +208,9 @@ openloom/
 
 ---
 
-## 10. M7（v0.8）— L7：插件 API + L8 测试
+## 10. M7（v0.8，回补项）— L7：插件 API + L8 测试
+
+> **状态：延后**。理由：插件 API 是否"对"必须以 M3（Sink 第三次验证）、M4（PreArchiveChecker 装饰器模式）落地后的真实接口为准——L8 测试本体的价值就在"验证 ABC 抽对没",在那些里程碑跑通前做插件 API 是空中楼阁。M0–M4 / M6 完成后再排期。
 
 1. 把 registry + 3 ABC 的公开接口文档化、语义化版本承诺。
 2. **写一个真实的外部插件 `openloom-plugin-dingtalk`**（独立 repo/包）：实现 `Sink` ABC + `@register_sink("dingtalk")`。
@@ -227,7 +238,7 @@ openloom/
 | 权限卡死（deck README 重点警告：`ask` 权限会让无人值守卡 waiting） | M0 文档显著位置继承 deck 的权限配置指南；`openloom watch` 启动时预检 agent 权限配置并警告；自动代批留作 L7 之后的独立提案 |
 | 事件 schema 一旦定错，L3 UI 怎么写都错 | M0 只做 schema + L0 验证，**不写任何 UI**；M3 前允许 breaking change，M3 后 schema 冻结 |
 | "600 行 core"在重写 deck harness 时膨胀 | 巡检 nudge / prompt 构造留在 runtime/，core/harness 只管状态机与事件；CI 行数守门 |
-| 误判率承诺（<10%、<1%）无实测支撑 | M2、M4 各安排一次 ≥20 真实任务的对比测量，数据写进 README |
+| 误判率承诺（<10%、<1%）无实测支撑 | M2 安排一次 ≥20 真实任务的对比测量，数据写进 README；M4 搁置期间在日常使用（M6 之后）中记录误判样本，作为回补 M4 时的实测基线 |
 
 ## 13. 立即行动（本周）
 

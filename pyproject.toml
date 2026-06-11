@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "openloom"
-version = "0.4.0"
+version = "0.7.0"
 description = "OpenLoom: a lightweight agent task harness — schedule, monitor, and verify AI coding tasks."
 requires-python = ">=3.11"
 license = {text = "MIT"}
@@ -39,6 +39,7 @@ forbidden_modules = [
   "openloom.levels.config",
   "openloom.levels.openspec",
   "openloom.levels.ui",
+  "openloom.levels.server",
   "openloom.runtime",
   "openloom.server",
 ]
@@ -52,5 +53,6 @@ modules = [
   "openloom.levels.config",
   "openloom.levels.openspec",
   "openloom.levels.ui",
+  "openloom.levels.server",
 ]
 message = "Levels must not import from each other"

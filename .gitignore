@@ -24,7 +24,9 @@ venv/
 # OS
 .DS_Store
 
-# Frontend build artifacts (L6 — CI injects into static/app/)
+# Frontend
+frontend/node_modules/
+frontend/dist/
 src/openloom/server/static/app/
 
 # Hatch

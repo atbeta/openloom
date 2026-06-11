@@ -176,6 +176,16 @@ class OpenCodeClient:
                 return [item for item in messages if isinstance(item, dict)]
         return []
 
+    async def diff(self, session_id: str) -> list[dict[str, Any]]:
+        data = await self._request_json("GET", f"/session/{session_id}/diff")
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        if isinstance(data, dict):
+            diff = data.get("diff") or data.get("files") or []
+            if isinstance(diff, list):
+                return [item for item in diff if isinstance(item, dict)]
+        return []
+
     async def _request_json(self, method: str, path: str, **kwargs: Any) -> Any:
         response = await self._request(method, path, **kwargs)
         if not response.content:

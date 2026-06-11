@@ -31,6 +31,10 @@ def main() -> None:
     watch_p.add_argument("spec", nargs="?", help="Path to task spec YAML (reads openloom.yaml if omitted)")
     watch_p.add_argument("--ui", action="store_true", help="Start web UI on http://127.0.0.1:55413")
 
+    serve_p = sub.add_parser("serve", help="Start OpenLoom server (multi-task, web dashboard)")
+    serve_p.add_argument("--host", help="Bind host (default: 127.0.0.1)")
+    serve_p.add_argument("--port", type=int, help="Bind port (default: 55413)")
+
     init_p = sub.add_parser("init", help="Generate openloom.yaml in the current directory")
     init_p.add_argument("--path", help="Target path (default: ./openloom.yaml)")
 
@@ -68,6 +72,41 @@ def main() -> None:
             web_sink = WebSink()
 
         asyncio.run(run_watch(args.spec, settings, ui=args.ui, web_sink=web_sink, store_path=str(settings.database_path)))
+
+    elif args.command == "serve":
+        from openloom.server.cold import require_fastapi
+        try:
+            require_fastapi()
+        except ImportError as e:
+            print(f"ERROR: {e}")
+            sys.exit(1)
+
+        import openloom.levels.ui.sink  # noqa: F401 — trigger registry
+        from openloom.levels.server.serve import run_serve
+
+        if args.host:
+            settings = Settings(
+                opencode_url=settings.opencode_url,
+                opencode_username=settings.opencode_username,
+                opencode_password=settings.opencode_password,
+                database_path=settings.database_path,
+                allowed_roots=settings.allowed_roots,
+                strict_roots=settings.strict_roots,
+                ui_host=args.host,
+                ui_port=args.port or settings.ui_port,
+            )
+        elif args.port:
+            settings = Settings(
+                opencode_url=settings.opencode_url,
+                opencode_username=settings.opencode_username,
+                opencode_password=settings.opencode_password,
+                database_path=settings.database_path,
+                allowed_roots=settings.allowed_roots,
+                strict_roots=settings.strict_roots,
+                ui_port=args.port,
+            )
+
+        asyncio.run(run_serve(settings))
 
     elif args.command == "status":
         store = Store(settings.database_path)
