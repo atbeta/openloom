@@ -134,6 +134,7 @@ def main() -> None:
     elif args.command == "serve":
         import openloom.levels.manual.checker  # noqa: F401
         import openloom.levels.manual.sink  # noqa: F401
+        import openloom.levels.ui.sink  # noqa: F401
         from openloom.levels.server.serve import run_serve
 
         if args.host:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from typing import Any
 
 from openloom.core.events import EventBus
@@ -19,7 +20,7 @@ async def run_watch(
     spec_path: str | None,
     settings: Any,
     *,
-    store_path: str | None = None,
+    store_path: str | Path | None = None,
     web_sink: Any = None,
     bus: Any = None,
 ) -> None:
@@ -38,7 +39,7 @@ async def run_watch(
         print(f"ERROR: OpenCode server not reachable: {health.message}")
         return
 
-    db_path = store_path or str(settings.database_path)
+    db_path = Path(store_path) if store_path else settings.database_path
     store = Store(db_path)
     bus = bus if bus is not None else EventBus()
 
