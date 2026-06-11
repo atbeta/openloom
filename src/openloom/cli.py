@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
-from pathlib import Path
 
 from openloom.config import Settings
 from openloom.core.store import Store
@@ -30,6 +29,7 @@ def main() -> None:
 
     watch_p = sub.add_parser("watch", help="Watch a task spec and manage the agent session")
     watch_p.add_argument("spec", nargs="?", help="Path to task spec YAML (reads openloom.yaml if omitted)")
+    watch_p.add_argument("--ui", action="store_true", help="Start web UI on http://127.0.0.1:55413")
 
     init_p = sub.add_parser("init", help="Generate openloom.yaml in the current directory")
     init_p.add_argument("--path", help="Target path (default: ./openloom.yaml)")
@@ -55,7 +55,19 @@ def main() -> None:
     elif args.command == "watch":
         from openloom.levels.manual.watch import run_watch
 
-        asyncio.run(run_watch(args.spec, settings, store_path=str(settings.database_path)))
+        web_sink = None
+        if args.ui:
+            from openloom.server.cold import require_fastapi
+            try:
+                require_fastapi()
+            except ImportError as e:
+                print(f"ERROR: {e}")
+                sys.exit(1)
+            import openloom.levels.ui.sink  # noqa: F401
+            from openloom.levels.ui.sink import WebSink
+            web_sink = WebSink()
+
+        asyncio.run(run_watch(args.spec, settings, ui=args.ui, web_sink=web_sink, store_path=str(settings.database_path)))
 
     elif args.command == "status":
         store = Store(settings.database_path)

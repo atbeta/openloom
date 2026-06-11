@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OpenLoom</title>
+<style>
+:root{--bg:#0d1117;--fg:#c9d1d9;--border:#30363d;--accent:#58a6ff;--green:#3fb950;--red:#f85149;--yellow:#d2991d;--muted:#8b949e}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;background:var(--bg);color:var(--fg);min-height:100vh}
+.header{background:#161b22;border-bottom:1px solid var(--border);padding:16px 24px;display:flex;align-items:center;justify-content:space-between}
+.header h1{font-size:18px;font-weight:600;color:var(--accent)}
+.header .status{font-size:13px;color:var(--muted)}
+.container{max-width:960px;margin:0 auto;padding:24px}
+.task-card{border:1px solid var(--border);border-radius:6px;padding:16px;margin-bottom:12px;background:#161b22}
+.task-card:hover{border-color:var(--accent)}
+.task-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.task-name{font-weight:600;font-size:15px}
+.task-status{font-size:12px;padding:2px 8px;border-radius:12px;font-weight:500}
+.status-running{background:rgba(88,166,255,0.15);color:var(--accent)}
+.status-waiting{background:rgba(210,153,29,0.15);color:var(--yellow)}
+.status-completed{background:rgba(63,185,80,0.15);color:var(--green)}
+.status-failed{background:rgba(248,81,73,0.15);color:var(--red)}
+.status-pending{background:rgba(139,148,158,0.15);color:var(--muted)}
+.task-meta{display:flex;gap:16px;font-size:13px;color:var(--muted);margin-bottom:8px}
+.progress-bar{height:4px;background:var(--border);border-radius:2px;overflow:hidden;margin-bottom:8px}
+.progress-fill{height:100%;background:var(--accent);transition:width 0.3s}
+.progress-fill.completed{background:var(--green)}
+.task-summary{font-size:13px;color:var(--muted)}
+.empty{text-align:center;padding:48px;color:var(--muted)}
+</style>
+</head>
+<body>
+<div class="header">
+<h1>OpenLoom</h1>
+<span class="status" id="conn-status">connecting...</span>
+</div>
+<div class="container" id="task-list"></div>
+<script>
+const API = '';
+let storeVersion = -1;
+let tasks = {};
+
+function statusClass(s){return'status-'+s;}
+function formatProgress(p){return Math.round(p*100)+'%';}
+
+function renderTask(id,t){
+  const name=t.name||t.id||id;
+  const status=t.status||'?';
+  const progress=t.progress||0;
+  const summary=t.last_summary||'';
+  const cs=status==='completed'?'completed':'';
+  return `<div class="task-card" id="t-${id}">
+    <div class="task-header">
+      <span class="task-name">${name}</span>
+      <span class="task-status ${statusClass(status)}">${status}</span>
+    </div>
+    <div class="task-meta">
+      <span>${t.workspace||''}</span>
+      <span>${formatProgress(progress)}</span>
+    </div>
+    <div class="progress-bar"><div class="progress-fill ${cs}" style="width:${progress*100}%"></div></div>
+    <div class="task-summary">${summary}</div>
+  </div>`;
+}
+
+function renderAll(){
+  const ids=Object.keys(tasks).sort((a,b)=>{
+    const ta=tasks[a].updated_at||0,tb=tasks[b].updated_at||0;
+    return tb-ta;
+  });
+  const el=document.getElementById('task-list');
+  if(!ids.length){el.innerHTML='<div class="empty">No tasks yet. Run openloom watch to create one.</div>';return;}
+  el.innerHTML=ids.map(id=>renderTask(id,tasks[id])).join('');
+}
+
+function patchTask(data){
+  const id=data.task_id;
+  if(tasks[id])Object.assign(tasks[id],data.data);
+  else{tasks[id]={...data.data,id};}
+  if(data.type==='TASK_COMPLETED')tasks[id].status='completed';
+  if(data.type==='TASK_FAILED')tasks[id].status='failed';
+  renderAll();
+}
+
+function fullRefresh(){
+  fetch(API+'/api/tasks').then(r=>r.json()).then(d=>{
+    const map={};
+    for(const t of d.tasks||[])map[t.id]=t;
+    tasks=map;
+    storeVersion=d.store_version||0;
+    renderAll();
+    document.getElementById('conn-status').textContent='live (v'+storeVersion+')';
+  }).catch(()=>{
+    document.getElementById('conn-status').textContent='disconnected';
+  });
+}
+
+function connectSSE(){
+  const evt=new EventSource(API+'/api/events');
+  evt.addEventListener('snapshot',e=>{
+    const d=JSON.parse(e.data);
+    const map={};
+    for(const t of d.tasks||[])map[t.id]=t;
+    tasks=map;
+    storeVersion=d.store_version||0;
+    renderAll();
+    document.getElementById('conn-status').textContent='live (v'+storeVersion+')';
+  });
+  evt.addEventListener('task',e=>{
+    const d=JSON.parse(e.data);
+    if(d.store_version<=storeVersion)return;
+    patchTask(d);
+    storeVersion=d.store_version;
+    document.getElementById('conn-status').textContent='live (v'+storeVersion+')';
+  });
+  evt.addEventListener('heartbeat',e=>{
+    const d=JSON.parse(e.data);
+    document.getElementById('conn-status').textContent='live (v'+storeVersion+')';
+  });
+  evt.onerror=()=>{
+    evt.close();
+    document.getElementById('conn-status').textContent='reconnecting...';
+    fullRefresh();
+    setTimeout(connectSSE,3000);
+  };
+}
+
+fullRefresh();
+connectSSE();
+</script>
+</body>
+</html>

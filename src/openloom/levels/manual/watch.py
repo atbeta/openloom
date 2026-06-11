@@ -11,13 +11,19 @@ from openloom.core.store import Store
 from openloom.runtime import prompts, session_status
 from openloom.runtime.opencode import OpenCodeClient
 
-# Import to trigger registry decorators
 import openloom.levels.manual.checker  # noqa: F401
 import openloom.levels.manual.sink  # noqa: F401
 import openloom.levels.manual.source  # noqa: F401
 
 
-async def run_watch(spec_path: str | None, settings: Any, store_path: str | None = None) -> None:
+async def run_watch(
+    spec_path: str | None,
+    settings: Any,
+    *,
+    ui: bool = False,
+    store_path: str | None = None,
+    web_sink: Any = None,
+) -> None:
     source_cls = get_source("manual")
     source = source_cls()
     specs = source.load(spec_path=spec_path)
@@ -35,8 +41,16 @@ async def run_watch(spec_path: str | None, settings: Any, store_path: str | None
 
     db_path = Path(store_path) if store_path else settings.database_path
     store = Store(db_path)
-
     bus = EventBus()
+
+    if ui and web_sink:
+        bus.subscribe_all(web_sink.on_event)
+        from openloom.server.app import create_app
+        app = create_app(harness=None, store=store, bus=bus, web_sink=web_sink)
+        import uvicorn
+        config = uvicorn.Config(app, host=settings.ui_host, port=settings.ui_port, log_level="warning")
+        server = uvicorn.Server(config)
+        asyncio.create_task(server.serve())
 
     sink_cls = get_sink("console")
     sink = sink_cls()
@@ -62,8 +76,8 @@ async def run_watch(spec_path: str | None, settings: Any, store_path: str | None
     print(f"openloom: watching {task_id[:12]} — {spec_name}")
     print(f"  workspace: {first_spec.get('workspace', '?')}")
     print(f"  interval:  {first_spec.get('check_interval_seconds', 300)}s")
-    print(f"  store:     {db_path}")
-    print(f"  source:    manual  checker: string  sink: console")
+    if ui:
+        print(f"  ui:        http://{settings.ui_host}:{settings.ui_port}")
     print()
 
     try:
@@ -76,3 +90,4 @@ async def run_watch(spec_path: str | None, settings: Any, store_path: str | None
             await asyncio.sleep(5)
     except KeyboardInterrupt:
         print("\nopenloom: interrupted (task may still run in OpenCode)")
+

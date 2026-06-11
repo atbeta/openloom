@@ -51,7 +51,7 @@ openloom/
 | M2 | v0.3 | L2 | `openloom[openspec]`：OpenSpecSource + OpenSpecChecker、显式注册表、冷检测 | +400 行 | — |
 | M3 | v0.4 | L3 | `openloom watch --ui`：Sink ABC + WebSink、FastAPI + SSE、单文件前端 | +450 行 | deck routes / 前端思路 |
 | M4 | v0.5 | L4 | `openloom[validate]`：PreArchiveChecker 装饰器（pytest / mypy / git diff 闸门） | +500 行 | — |
-| M5 | v0.6 | L5 | `openloom[github]`：GitHubSource | +600 行 | — |
+| M5 | v0.6 | L5 | **（延后）** `openloom[github]`：GitHubSource | +600 行 | — |
 | M6 | v0.7 | L6 | `openloom serve`：双进程模式 + Svelte 完整观测台（deck 功能回归） | +800 行 | deck main.py / frontend / status_stream |
 | M7 | v0.8 | L7 | 插件 API 文档化 + `openloom-plugin-dingtalk` 示例（即 L8 测试） | +400 行 | — |
 
@@ -171,6 +171,8 @@ openloom/
 
 ## 8. M5（v0.6）— L5：GitHub 源
 
+> **状态：延后**。理由：写权限（PR/comment）实际工作量预估远超 +600 行，且与无人值守核心价值不直接相关，优先 M0–M4 跑通验证架构。重新排期前需要先回答"读侧（label → task）够不够用、写侧要不要拆 v0.6.x 小步"。
+
 1. `levels/L5_github/`：`GitHubSource`（Issue label 触发 → 生成 TaskSpec）+ 完成后回写 PR/comment（一个 `GitHubSink`，顺便第三次验证 Sink ABC）。
 2. `--source github` CLI 参数走注册表查找。
 3. **extras**：`openloom[github]`（PyGithub）。
@@ -184,7 +186,8 @@ openloom/
 **这一步把 deck 的观测台正式吸收进 OpenLoom**：
 
 1. **`openloom serve`**：双进程模式——server 独立常驻、`Harness.load_from_store()` 启动、CLI 与 Web 都通过 HTTP/store 交互。`create_app(harness=)` 不改一行。
-2. **搬回 deck 的观测台能力**（main.py 剩余部分 + status_stream.py + frontend）：
+2. ~~搬回 deck 的观测台能力~~ **M5 延后后,M6 优先级需要重排**:deck 观测台吸收与 M5 的 GitHub 源是两条独立线,建议 M6 先做"无 L5 依赖"的纯观测台(Issue 列表占位 = `disabled` 按钮),M5 重新排期后再接入真实数据源。
+3. 搬回 deck 的观测台能力（main.py 剩余部分 + status_stream.py + frontend）：
    - Session 监控（按项目分组、busy/idle/retry）
    - Dispatch（一次性派发）
    - Session 抽屉（消息 / diff / 元数据）

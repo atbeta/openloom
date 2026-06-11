@@ -30,6 +30,8 @@ class Settings:
     database_path: Path
     allowed_roots: list[Path]
     strict_roots: bool
+    ui_host: str = "127.0.0.1"
+    ui_port: int = 55413
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -45,6 +47,8 @@ class Settings:
             database_path=database,
             allowed_roots=roots,
             strict_roots=_env_bool("OPENLOOM_STRICT_ROOTS", default=False),
+            ui_host=os.getenv("OPENLOOM_UI_HOST", "127.0.0.1"),
+            ui_port=int(os.getenv("OPENLOOM_UI_PORT", "55413")),
         )
 
     def is_allowed_workspace(self, cwd: str) -> bool:
