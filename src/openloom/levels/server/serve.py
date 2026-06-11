@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 from typing import Any
 
 
@@ -98,9 +99,9 @@ async def run_serve(settings: Any) -> None:
     finally:
         harness_task.cancel()
         monitor_task.cancel()
-        with asyncio.suppress(asyncio.CancelledError):
+        with contextlib.suppress(asyncio.CancelledError):
             await harness_task
-        with asyncio.suppress(asyncio.CancelledError):
+        with contextlib.suppress(asyncio.CancelledError):
             await monitor_task
 
 
