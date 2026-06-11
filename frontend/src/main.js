@@ -1,4 +1,5 @@
 import './style.css';
+import './dashboard.css';
 import { mount } from 'svelte';
 import App from './App.svelte';
 

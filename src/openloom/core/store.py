@@ -104,6 +104,12 @@ class Store:
 
         return self._write(mutator)
 
+    def delete_task(self, task_id: str) -> int:
+        def mutator(conn: sqlite3.Connection) -> None:
+            conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+
+        return self._write(mutator)
+
     def get_task(self, task_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:
             row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()

@@ -1,5 +1,7 @@
 <script>
   import { onMount } from 'svelte';
+  import Icon from './Icon.svelte';
+  import { buildUsagePeriods, emptyUsageSlice, isUnknownModel, sessionModelName } from './usage.js';
 
   let state = $state({
     server: { ok: false, url: '', message: 'loading' },
@@ -9,8 +11,26 @@
     sessionsByDirectory: {},
     archivedSessions: [],
     sessionStatus: {},
-    metrics: { running: 0, waiting: 0, failed: 0, completedToday: 0 }
+    metrics: { running: 0, waiting: 0, failed: 0, completedToday: 0, sessionsBusy: 0, sessionsIdle: 0, sessionsRetry: 0 },
+    usage: {
+      periods: {
+        today: emptyUsageSlice(),
+        week: emptyUsageSlice(),
+        month: emptyUsageSlice(),
+        total: emptyUsageSlice(),
+      },
+    },
   });
+
+  let mainView = $state('dashboard');
+  let usagePeriod = $state('total');
+
+  const usagePeriods = [
+    { id: 'today', label: 'Today' },
+    { id: 'week', label: 'This week' },
+    { id: 'month', label: 'This month' },
+    { id: 'total', label: 'Total' },
+  ];
 
   let loading = $state(true);
   let error = $state('');
@@ -23,7 +43,6 @@
   let taskWorkspace = $state('');
   let taskCheckInterval = $state(0);
   let taskPlan = $state({
-    name: '',
     goal: '',
     steps: [{ title: '', acceptance: [''] }],
     globalAcceptance: [],
@@ -54,7 +73,7 @@
   let drawerTaskTab = $state('overview');
 
   const intervalPresets = [
-    { label: 'Once', minutes: 0 },
+    { label: 'Never', minutes: 0 },
     { label: '5m', minutes: 5 },
     { label: '15m', minutes: 15 },
     { label: '30m', minutes: 30 },
@@ -115,6 +134,32 @@
     drawerTask || state.tasks.find((task) => task.id === selectedTaskId) || null
   );
 
+  const usageBundle = $derived.by(() => {
+    if (state.usage?.periods) return state.usage;
+    return buildUsagePeriods(state.sessions || [], state.now || Date.now() / 1000);
+  });
+
+  const usage = $derived.by(() => {
+    const periods = usageBundle.periods;
+    if (periods) {
+      return periods[usagePeriod] || periods.total || emptyUsageSlice();
+    }
+    return emptyUsageSlice();
+  });
+
+  const tokenBreakdown = $derived.by(() => {
+    const t = usage.totalTokens || {};
+    const parts = [
+      { key: 'input', label: 'Input', value: t.input || 0, tone: 'input' },
+      { key: 'output', label: 'Output', value: t.output || 0, tone: 'output' },
+      { key: 'reasoning', label: 'Reasoning', value: t.reasoning || 0, tone: 'reasoning' },
+      { key: 'cacheRead', label: 'Cache read', value: t.cacheRead || 0, tone: 'cache-read' },
+      { key: 'cacheWrite', label: 'Cache write', value: t.cacheWrite || 0, tone: 'cache-write' },
+    ];
+    const total = parts.reduce((sum, part) => sum + part.value, 0) || 1;
+    return parts.map((part) => ({ ...part, pct: Math.max(0, (part.value / total) * 100) }));
+  });
+
   const sessionsInSelectedProject = $derived(
     selectedProjectDir ? state.sessionsByDirectory[selectedProjectDir] || [] : []
   );
@@ -163,7 +208,7 @@
 
   function taskIntervalLabel(task) {
     const sec = task?.check_interval_seconds || 0;
-    if (sec <= 0) return 'once';
+    if (sec <= 0) return 'never';
     if (sec % 60 === 0) return `${sec / 60}m`;
     return `${sec}s`;
   }
@@ -213,10 +258,60 @@
     collapsedDirs = next;
   }
 
-  async function openSessionDrawer(sessionId) {
+  function formatCost(value) {
+    const n = Number(value) || 0;
+    if (n === 0) return '$0.00';
+    if (n < 0.01) return `$${n.toFixed(4)}`;
+    return `$${n.toFixed(2)}`;
+  }
+
+  function formatTokens(value) {
+    const n = Number(value) || 0;
+    if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
+    if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+    return String(n);
+  }
+
+  function formatPercent(value) {
+    return `${Math.round((Number(value) || 0) * 100)}%`;
+  }
+
+  function periodUsage(id) {
+    const periods = usageBundle.periods;
+    if (periods?.[id]) return periods[id];
+    return emptyUsageSlice();
+  }
+
+  function periodLabel(id) {
+    return usagePeriods.find((item) => item.id === id)?.label || id;
+  }
+
+  function sessionUsage(session) {
+    if (!session) return null;
+    const tokens = session.tokens || {};
+    const cache = tokens.cache || {};
+    const parsed = {
+      input: Number(tokens.input) || 0,
+      output: Number(tokens.output) || 0,
+      reasoning: Number(tokens.reasoning) || 0,
+      cacheRead: Number(cache.read) || 0,
+      cacheWrite: Number(cache.write) || 0,
+    };
+    const model = session.model || {};
+    return {
+      cost: Number(session.cost) || 0,
+      tokens: parsed,
+      totalTokens: Object.values(parsed).reduce((sum, n) => sum + n, 0),
+      model: sessionModelName(session),
+      providerID: model.providerID || '',
+      modelID: model.id || model.modelID || '',
+    };
+  }
+
+  async function openSessionDrawer(sessionId, tab = 'messages') {
     closeTaskDrawer();
     drawerSessionId = sessionId;
-    drawerTab = 'messages';
+    drawerTab = tab;
     drawerError = '';
     drawerMessages = [];
     drawerDiff = [];
@@ -460,11 +555,19 @@
 
   function emptyPlan() {
     return {
-      name: '',
       goal: '',
       steps: [emptyPlanStep()],
       globalAcceptance: [],
     };
+  }
+
+  function derivePlanName(plan) {
+    const goalLine = plan.goal.trim().split('\n').map((line) => line.trim()).find(Boolean) || '';
+    if (goalLine) {
+      return goalLine.length > 60 ? `${goalLine.slice(0, 57)}…` : goalLine;
+    }
+    const firstStep = plan.steps.find((step) => step.title.trim())?.title.trim() || '';
+    return firstStep || 'Untitled task';
   }
 
   function addPlanStep() {
@@ -523,7 +626,7 @@
         acceptance: step.acceptance.map((item) => item.trim()).filter(Boolean),
       }))
       .filter((step) => step.title);
-    const name = plan.name.trim() || steps[0]?.title || 'Untitled task';
+    const name = derivePlanName(plan);
     const goal = plan.goal.trim() || name;
     return {
       name,
@@ -603,10 +706,7 @@
   function projectDirLabel(dir) {
     const count = state.sessionsByDirectory[dir]?.length ?? 0;
     if (dir === '(unknown)') return `Unknown (${count})`;
-    const name = projectName(dir);
-    const path = compactPath(dir);
-    if (path && path !== name) return `${name} — ${path} (${count})`;
-    return `${name} (${count})`;
+    return `${projectName(dir)} (${count})`;
   }
 
   function sessionOptionLabel(session) {
@@ -625,6 +725,27 @@
       const response = await fetch(`/api/tasks/${id}/${action}`, { method: 'POST' });
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.detail || response.statusText);
+      await refresh();
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  async function deleteArchivedTask(taskId = null) {
+    const id = taskId ?? drawerTask?.id ?? selectedTaskId;
+    if (!id) return;
+    const ok = await askConfirm({
+      title: 'Delete archived task',
+      message: 'Remove this task record permanently? This cannot be undone.',
+      confirmLabel: 'Delete',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      const response = await fetch(`/api/tasks/${id}`, { method: 'DELETE' });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || body.error || response.statusText);
+      if (drawerTaskId === id) closeTaskDrawer();
       await refresh();
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
@@ -657,14 +778,6 @@
     if (!path) return '';
     if (path === '/') return '/';
     return path.replace(/\/$/, '');
-  }
-
-  function compactPath(path) {
-    const normalized = shortPath(path);
-    if (!normalized) return '';
-    const parts = normalized.split('/').filter(Boolean);
-    if (parts.length <= 2) return normalized.startsWith('/') ? `/${parts.join('/')}` : parts.join('/');
-    return `…/${parts.slice(-2).join('/')}`;
   }
 
   function selectRecentWorkspace(path) {
@@ -762,22 +875,47 @@
 <div class="app">
   <aside class="sidebar">
     <div class="brand">
-      <div class="brand-mark">⌘</div>
-      <span class="brand-name">OpenLoom</span>
-    </div>
-    <div class="conn">
-      <span class:off={!state.server.ok} class="conn-dot"></span>
-      {state.server.ok ? 'Online' : 'Offline'}
+      <div class="brand-mark"><Icon name="loom" size={12} /></div>
+      <div class="brand-copy">
+        <span class="brand-name">OpenLoom</span>
+        <span class="brand-sub">OpenCode observer</span>
+      </div>
     </div>
 
-    <div class="sidebar-section">
-      <div class="nav-label">Status</div>
-      <div class="status-line"><span class="dim">Server</span><span class="mono" title={state.server.url}>{state.server.url.replace(/^https?:\/\//, '')}</span></div>
-      <div class="status-line"><span class="dim">Sessions</span><span class="mono">{state.sessions.length}</span></div>
-      <div class="status-line"><span class="dim">Tasks</span><span class="mono">{state.tasks.length}</span></div>
+    <div class="conn-card" class:conn-off={!state.server.ok}>
+      <div class="conn-card-top">
+        <span class:off={!state.server.ok} class="conn-dot"></span>
+        <span>{state.server.ok ? 'Connected' : 'Offline'}</span>
+      </div>
+      <div class="conn-url mono" title={state.server.url}>{state.server.url.replace(/^https?:\/\//, '') || '—'}</div>
+      <div class="conn-meta">Updated {refreshAgeSeconds === null ? '—' : `${refreshAgeSeconds}s ago`}</div>
+    </div>
+
+    <div class="sidebar-section sidebar-recent">
+      <div class="nav-label">Recent Workspaces</div>
+      <div class="recent-list">
+        {#if state.recentWorkspaces.length === 0}
+          <div class="dim empty-mini">Used paths will appear here.</div>
+        {:else}
+          {#each state.recentWorkspaces as workspace}
+            <div class="recent-row" class:active={taskWorkspace === workspace}>
+              <button class="recent-item" type="button" title={workspace} onclick={() => selectRecentWorkspace(workspace)}>
+                <Icon name="folder" size={14} class="recent-icon" />
+                <span class="recent-path mono">{projectName(workspace)}</span>
+              </button>
+              <button class="recent-remove" type="button" aria-label="Remove from recents" title="Remove" onclick={(event) => removeRecentWorkspace(workspace, event)}>
+                <Icon name="x" size={12} />
+              </button>
+            </div>
+          {/each}
+        {/if}
+      </div>
+    </div>
+
+    <div class="sidebar-section sidebar-foot">
       <button class="status-line status-button" type="button" onclick={() => (archivedPopoverOpen = !archivedPopoverOpen)} aria-expanded={archivedPopoverOpen}>
-        <span class="dim">Archived</span>
-        <span class="mono">{(state.archivedSessions || []).length} ▸</span>
+        <span class="dim">Archived sessions</span>
+        <span class="mono archived-count">{(state.archivedSessions || []).length}<Icon name="chevron-right" size={10} class="inline-icon" /></span>
       </button>
       {#if archivedPopoverOpen}
         <div class="hidden-popover" role="dialog" aria-label="Archived sessions">
@@ -803,35 +941,20 @@
           {/if}
         </div>
       {/if}
-      <div class="status-line"><span class="dim">Updated</span><span class="mono">{refreshAgeSeconds === null ? '—' : `${refreshAgeSeconds}s ago`}</span></div>
-    </div>
-
-    <div class="sidebar-section sidebar-recent">
-      <div class="nav-label">Recent Workspaces</div>
-      <div class="recent-list">
-        {#if state.recentWorkspaces.length === 0}
-          <div class="dim empty-mini">Used paths will appear here.</div>
-        {:else}
-          {#each state.recentWorkspaces as workspace}
-            <div class="recent-row" class:active={taskWorkspace === workspace}>
-              <button class="recent-item mono" type="button" title={workspace} onclick={() => selectRecentWorkspace(workspace)}>
-                {compactPath(workspace)}
-              </button>
-              <button class="recent-remove" type="button" aria-label="Remove from recents" title="Remove" onclick={(event) => removeRecentWorkspace(workspace, event)}>×</button>
-            </div>
-          {/each}
-        {/if}
-      </div>
     </div>
   </aside>
 
   <main class="main">
     <header class="status-bar">
       <div class="status-left">
-        <h1>OpenCode Server</h1>
+        <h1>{mainView === 'dashboard' ? 'Dashboard' : 'Activity'}</h1>
         <span class={`pill ${state.server.ok ? 'pill-ok' : 'pill-fail'}`}>
           <span class="pill-dot"></span>{state.server.ok ? 'Healthy' : 'Unavailable'}
         </span>
+      </div>
+      <div class="main-tabs">
+        <button type="button" class="main-tab" class:active={mainView === 'dashboard'} onclick={() => (mainView = 'dashboard')}>Dashboard</button>
+        <button type="button" class="main-tab" class:active={mainView === 'activity'} onclick={() => (mainView = 'activity')}>Activity</button>
       </div>
     </header>
 
@@ -839,6 +962,175 @@
       <div class="error" style="padding: 10px 20px;">{error}</div>
     {/if}
 
+    {#if mainView === 'dashboard'}
+      <section class="dashboard">
+        {#if loading}
+          <div class="empty">Loading usage data…</div>
+        {:else}
+          <div class="dash-overview">
+            <div class="nav-label">Overview</div>
+            <div class="stat-grid dash-stat-grid">
+              <div class="stat-card">
+                <span class="stat-label">Sessions</span>
+                <span class="stat-value mono">{state.sessions.length}</span>
+                <span class="stat-sub">{state.metrics.sessionsBusy || 0} busy · {state.metrics.sessionsRetry || 0} wait</span>
+              </div>
+              <div class="stat-card">
+                <span class="stat-label">Tasks</span>
+                <span class="stat-value mono">{activeTasks.length}</span>
+                <span class="stat-sub">{state.metrics.running || 0} running</span>
+              </div>
+              <div class="stat-card stat-card-accent">
+                <span class="stat-label">{periodLabel(usagePeriod)} tokens</span>
+                <span class="stat-value mono">{formatTokens(usage.tokenTotal)}</span>
+                <span class="stat-sub">
+                  {formatPercent(usage.cacheEfficiency)} cache · {usage.sessionsWithUsage}/{usage.sessionCount} sessions
+                </span>
+                <span class="stat-est dim mono">Est. {formatCost(usage.totalCost)}</span>
+              </div>
+              <div class="stat-card">
+                <span class="stat-label">Cache read</span>
+                <span class="stat-value mono">{formatTokens(usage.totalTokens?.cacheRead || 0)}</span>
+                <span class="stat-sub">{formatPercent(usage.cacheEfficiency)} of input+ cache</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="period-summary">
+            {#each usagePeriods as period}
+              {@const slice = periodUsage(period.id)}
+              <button
+                type="button"
+                class="period-summary-card"
+                class:active={usagePeriod === period.id}
+                onclick={() => (usagePeriod = period.id)}
+              >
+                <span class="period-summary-label">{period.label}</span>
+                <span class="period-summary-value mono">{formatTokens(slice.tokenTotal)}</span>
+                <span class="period-summary-meta dim mono">
+                  Est. {formatCost(slice.totalCost)} · {slice.sessionsWithUsage}/{slice.sessionCount} sessions
+                </span>
+              </button>
+            {/each}
+          </div>
+
+          <div class="dash-card dash-token-card">
+            <div class="dash-card-head">
+              <span class="dash-title">Token breakdown · {periodLabel(usagePeriod)}</span>
+              <span class="dash-meta dim">Session totals for active sessions in this window</span>
+            </div>
+            <div class="token-bar" aria-hidden="true">
+              {#each tokenBreakdown as part}
+                {#if part.value > 0}
+                  <span class={`token-bar-seg token-${part.tone}`} style={`width: ${part.pct}%`} title={`${part.label}: ${formatTokens(part.value)}`}></span>
+                {/if}
+              {/each}
+            </div>
+            <div class="token-legend">
+              {#each tokenBreakdown as part}
+                <div class="token-legend-item">
+                  <span class={`token-swatch token-${part.tone}`}></span>
+                  <span>{part.label}</span>
+                  <span class="mono">{formatTokens(part.value)}</span>
+                </div>
+              {/each}
+            </div>
+          </div>
+
+          {#if usage.byModel?.length}
+            <div class="group dash-group">
+              <div class="group-head">
+                <span class="group-title">By model</span>
+                <span class="group-count">{usage.byModel.length}</span>
+              </div>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Model</th>
+                    <th>Sessions</th>
+                    <th>Input</th>
+                    <th>Output</th>
+                    <th>Cache read</th>
+                    <th>Total tokens</th>
+                    <th class="col-est">Est. cost</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each usage.byModel as row}
+                    <tr>
+                      <td class="mono">
+                        {#if isUnknownModel(row.model)}
+                          <span class="model-unknown" title="OpenCode did not record a model for these sessions">Unknown</span>
+                        {:else}
+                          {row.model}
+                        {/if}
+                      </td>
+                      <td class="mono">{row.sessionCount}</td>
+                      <td class="mono">{formatTokens(row.tokens?.input)}</td>
+                      <td class="mono">{formatTokens(row.tokens?.output)}</td>
+                      <td class="mono">{formatTokens(row.tokens?.cacheRead)}</td>
+                      <td class="mono">{formatTokens(row.totalTokens)}</td>
+                      <td class="mono col-est dim">{formatCost(row.cost)}</td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+          {/if}
+
+          {#if usage.topSessions?.length}
+            <div class="group dash-group">
+              <div class="group-head"><span class="group-title">Top sessions by tokens</span><span class="group-count">{usage.topSessions.length}</span></div>
+              <table>
+                <thead>
+                  <tr>
+                    <th>Title</th>
+                    <th>Model</th>
+                    <th>Tokens</th>
+                    <th class="col-est">Est. cost</th>
+                    <th></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each usage.topSessions as row}
+                    <tr class="clickable" onclick={() => openSessionDrawer(row.id, 'usage')}>
+                      <td><span class="task-title">{row.title}</span><div class="dim mono dash-sub">{shortPath(row.directory)}</div></td>
+                      <td class="mono">
+                        {#if isUnknownModel(row.model)}
+                          <span class="model-unknown" title="OpenCode did not record a model for this session">Unknown</span>
+                        {:else}
+                          {row.model}
+                        {/if}
+                      </td>
+                      <td class="mono">{formatTokens(row.totalTokens)}</td>
+                      <td class="mono col-est dim">{formatCost(row.cost)}</td>
+                      <td><button class="btn btn-ghost btn-sm row-btn" type="button" onclick={(e) => { e.stopPropagation(); openSessionDrawer(row.id, 'usage'); }}>Usage</button></td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+            </div>
+          {/if}
+
+          {#if !usage.byModel?.length && !usage.topSessions?.length}
+            <div class="empty dash-empty">
+              {#if usage.sessionCount > 0}
+                {usage.sessionCount} session{usage.sessionCount === 1 ? '' : 's'} active in {periodLabel(usagePeriod).toLowerCase()}, but no token usage recorded yet.
+              {:else}
+                No sessions active in {periodLabel(usagePeriod).toLowerCase()}.
+              {/if}
+            </div>
+          {/if}
+
+          <div class="dash-next">
+            <div class="dash-next-label">Next up</div>
+            <div class="dash-next-copy dim">
+              Per-call breakdown, subagent rollups, and usage trends will land here.
+            </div>
+          </div>
+        {/if}
+      </section>
+    {:else}
     <section class="table-section">
       {#if loading}
         <div class="empty">Loading OpenLoom state…</div>
@@ -890,9 +1182,12 @@
                     <td class="mono">{shortPath(task.workspace)}</td>
                     <td><span class={`pill ${statusClass(task.status)}`}><span class="pill-dot"></span>{task.status}</span></td>
                     <td>
-                      {#if task.active_session_id}
-                        <button class="btn btn-ghost btn-sm row-btn" type="button" onclick={(e) => { e.stopPropagation(); viewTaskSession(task); }}>View</button>
-                      {/if}
+                      <div class="row-actions">
+                        {#if task.active_session_id}
+                          <button class="btn btn-ghost btn-sm row-btn" type="button" onclick={(e) => { e.stopPropagation(); viewTaskSession(task); }}>View</button>
+                        {/if}
+                        <button class="btn btn-ghost btn-sm row-btn btn-danger" type="button" onclick={(e) => { e.stopPropagation(); deleteArchivedTask(task.id); }}>Delete</button>
+                      </div>
                     </td>
                   </tr>
                 {/each}
@@ -953,19 +1248,22 @@
         {/if}
       {/if}
     </section>
+    {/if}
   </main>
 
   <aside class="dispatch">
-    <div class="dispatch-head"><h2>Actions</h2></div>
+    <div class="dispatch-head">
+      <h2>New Task</h2>
+    </div>
     <div class="dispatch-body">
-      <section class="block">
-        <div class="block-label">New Task</div>
-        <div class="segmented">
-          <button type="button" class:active={taskTarget === 'workspace'} onclick={() => (taskTarget = 'workspace')}>Workspace</button>
-          <button type="button" class:active={taskTarget === 'session'} onclick={() => (taskTarget = 'session')}>Session</button>
+      <div class="dispatch-card">
+        <div class="nav-label">Target</div>
+        <div class="main-tabs dispatch-target-tabs">
+          <button type="button" class="main-tab" class:active={taskTarget === 'workspace'} onclick={() => (taskTarget = 'workspace')}>Workspace</button>
+          <button type="button" class="main-tab" class:active={taskTarget === 'session'} onclick={() => (taskTarget = 'session')}>Session</button>
         </div>
         {#if taskTarget === 'workspace'}
-          <div class="field">
+          <div class="field field-last">
             <label for="task-workspace">Workspace</label>
             <div class="path-row">
               <input id="task-workspace" class="mono" type="text" bind:value={taskWorkspace} placeholder="/path/to/project" />
@@ -984,7 +1282,7 @@
               {/each}
             </select>
           </div>
-          <div class="field">
+          <div class="field field-last">
             <label for="task-session">Session</label>
             <select id="task-session" bind:value={selectedSessionId} disabled={sessionsInSelectedProject.length === 0}>
               {#each sessionsInSelectedProject as session}
@@ -993,126 +1291,120 @@
             </select>
           </div>
         {/if}
-        <div class="plan-preview">
-          <div class="block-label">Plan</div>
-          <div class="field">
-            <label for="plan-name">Title</label>
-            <input id="plan-name" type="text" bind:value={taskPlan.name} placeholder="Short task name" />
+      </div>
+
+      <div class="dispatch-card dispatch-card-plan">
+        <div class="dispatch-card-head">
+          <div class="nav-label">Plan</div>
+          <span class="dispatch-meta dim mono">{planStepCount(taskPlan)} steps · {planAcceptanceCount(taskPlan)} checks</span>
+        </div>
+        <div class="field">
+          <label for="plan-goal">Goal</label>
+          <textarea id="plan-goal" class="harness-goal" bind:value={taskPlan.goal} placeholder="What should be true when done?"></textarea>
+        </div>
+        <div class="field">
+          <div class="field-head">
+            <span class="field-label">Steps</span>
+            <button class="btn btn-ghost btn-sm" type="button" onclick={addPlanStep}>+ Add step</button>
           </div>
-          <div class="field">
-            <label for="plan-goal">Goal</label>
-            <textarea id="plan-goal" class="harness-goal" bind:value={taskPlan.goal} placeholder="What should be true when done?"></textarea>
+          <div class="plan-step-list">
+            {#each taskPlan.steps as step, i}
+              <div class="plan-step-card">
+                <div class="harness-list-row">
+                  <span class="harness-list-index">{i + 1}</span>
+                  <input type="text" bind:value={taskPlan.steps[i].title} placeholder="Describe this step" />
+                  <button class="list-remove" type="button" aria-label="Remove step" onclick={() => removePlanStep(i)}>
+                    <Icon name="x" size={12} />
+                  </button>
+                </div>
+                <div class="plan-step-acceptance">
+                  <div class="field-head">
+                    <span class="dim plan-step-label">Step acceptance</span>
+                    <button class="btn btn-ghost btn-sm" type="button" onclick={() => addStepAcceptance(i)}>+ Add</button>
+                  </div>
+                  <div class="harness-list">
+                    {#each step.acceptance as _item, j}
+                      <div class="harness-list-row">
+                        <span class="harness-list-index"><Icon name="check" size={10} /></span>
+                        <input
+                          type="text"
+                          bind:value={taskPlan.steps[i].acceptance[j]}
+                          placeholder="Done when this step…"
+                        />
+                        <button
+                          class="list-remove"
+                          type="button"
+                          aria-label="Remove criterion"
+                          onclick={() => removeStepAcceptance(i, j)}
+                        ><Icon name="x" size={12} /></button>
+                      </div>
+                    {/each}
+                  </div>
+                </div>
+              </div>
+            {/each}
           </div>
-          <div class="field">
-            <div class="field-head">
-              <span class="field-label">Steps</span>
-              <button class="btn btn-ghost btn-sm" type="button" onclick={addPlanStep}>+ Add step</button>
-            </div>
-            <div class="plan-step-list">
-              {#each taskPlan.steps as step, i}
-                <div class="plan-step-card">
-                  <div class="harness-list-row">
-                    <span class="harness-list-index">{i + 1}</span>
-                    <input type="text" bind:value={taskPlan.steps[i].title} placeholder="Describe this step" />
-                    <button class="list-remove" type="button" aria-label="Remove step" onclick={() => removePlanStep(i)}>×</button>
-                  </div>
-                  <div class="plan-step-acceptance">
-                    <div class="field-head">
-                      <span class="dim plan-step-label">Step acceptance</span>
-                      <button class="btn btn-ghost btn-sm" type="button" onclick={() => addStepAcceptance(i)}>+ Add</button>
-                    </div>
-                    <div class="harness-list">
-                      {#each step.acceptance as _item, j}
-                        <div class="harness-list-row">
-                          <span class="harness-list-index">✓</span>
-                          <input
-                            type="text"
-                            bind:value={taskPlan.steps[i].acceptance[j]}
-                            placeholder="Done when this step…"
-                          />
-                          <button
-                            class="list-remove"
-                            type="button"
-                            aria-label="Remove criterion"
-                            onclick={() => removeStepAcceptance(i, j)}
-                          >×</button>
-                        </div>
-                      {/each}
-                    </div>
-                  </div>
+        </div>
+        <div class="field field-last">
+          <div class="field-head">
+            <span class="field-label">Global acceptance <span class="dim">(optional)</span></span>
+            <button class="btn btn-ghost btn-sm" type="button" onclick={addGlobalAcceptance}>+ Add</button>
+          </div>
+          {#if taskPlan.globalAcceptance.length}
+            <div class="harness-list">
+              {#each taskPlan.globalAcceptance as _item, i}
+                <div class="harness-list-row">
+                  <span class="harness-list-index"><Icon name="check" size={10} /></span>
+                  <input
+                    type="text"
+                    bind:value={taskPlan.globalAcceptance[i]}
+                    placeholder="Whole-task check (e.g. pytest passes)"
+                  />
+                  <button
+                    class="list-remove"
+                    type="button"
+                    aria-label="Remove criterion"
+                    onclick={() => removeGlobalAcceptance(i)}
+                  ><Icon name="x" size={12} /></button>
                 </div>
               {/each}
             </div>
-          </div>
-          <div class="field">
-            <div class="field-head">
-              <span class="field-label">Global acceptance <span class="dim">(optional)</span></span>
-              <button class="btn btn-ghost btn-sm" type="button" onclick={addGlobalAcceptance}>+ Add</button>
-            </div>
-            {#if taskPlan.globalAcceptance.length}
-              <div class="harness-list">
-                {#each taskPlan.globalAcceptance as _item, i}
-                  <div class="harness-list-row">
-                    <span class="harness-list-index">✓</span>
-                    <input
-                      type="text"
-                      bind:value={taskPlan.globalAcceptance[i]}
-                      placeholder="Whole-task check (e.g. pytest passes)"
-                    />
-                    <button
-                      class="list-remove"
-                      type="button"
-                      aria-label="Remove criterion"
-                      onclick={() => removeGlobalAcceptance(i)}
-                    >×</button>
-                  </div>
-                {/each}
-              </div>
-            {:else}
-              <div class="dim plan-hint">Cross-cutting checks such as tests or lint.</div>
-            {/if}
-          </div>
-          <div class="dim plan-hint">
-            {planStepCount(taskPlan)} steps · {planAcceptanceCount(taskPlan)} acceptance criteria
-          </div>
+          {/if}
         </div>
+      </div>
 
-        <div class="field">
-          <label for="task-interval">Check interval</label>
-          <div class="interval-picker">
-            <div class="interval-presets">
-              {#each intervalPresets as preset}
-                <button
-                  type="button"
-                  class="interval-preset"
-                  class:active={Number(taskCheckInterval) === preset.minutes}
-                  onclick={() => (taskCheckInterval = preset.minutes)}
-                >{preset.label}</button>
-              {/each}
-            </div>
-            <div class="interval-custom">
-              <input id="task-interval" type="number" min="0" max="120" bind:value={taskCheckInterval} />
-              <span class="interval-unit">min</span>
-            </div>
+      <div class="dispatch-card">
+        <div class="nav-label">Check interval</div>
+        <div class="interval-picker dispatch-interval">
+          <div class="interval-presets">
+            {#each intervalPresets as preset}
+              <button
+                type="button"
+                class="interval-preset"
+                class:active={Number(taskCheckInterval) === preset.minutes}
+                onclick={() => (taskCheckInterval = preset.minutes)}
+              >{preset.label}</button>
+            {/each}
           </div>
-          <div class="dim interval-hint">
-            {Number(taskCheckInterval) <= 0
-              ? 'Send once — no periodic checks.'
-              : `Re-check every ${taskCheckInterval} min.`}
+          <div class="interval-custom">
+            <input id="task-interval" type="number" min="0" max="120" bind:value={taskCheckInterval} />
+            <span class="interval-unit">min</span>
           </div>
         </div>
-        <button
-          class="btn btn-primary"
-          type="button"
-          disabled={taskSubmitting || !planStepCount(taskPlan)}
-          onclick={() => createTask()}
-        >
-          {taskSubmitting ? 'Starting…' : 'Start Task'}
-        </button>
-        {#if taskError}
-          <div class="error" style="margin-top: 8px;">{taskError}</div>
-        {/if}
-      </section>
+      </div>
+    </div>
+    <div class="dispatch-foot">
+      <button
+        class="btn btn-primary btn-block"
+        type="button"
+        disabled={taskSubmitting || !planStepCount(taskPlan)}
+        onclick={() => createTask()}
+      >
+        {taskSubmitting ? 'Starting…' : 'Start Task'}
+      </button>
+      {#if taskError}
+        <div class="error">{taskError}</div>
+      {/if}
     </div>
   </aside>
 </div>
@@ -1229,6 +1521,8 @@
       {/if}
       {#if drawerTask.status !== 'archived'}
         <button class="btn btn-ghost" type="button" onclick={() => taskAction('archive', drawerTask.id)}>Archive</button>
+      {:else}
+        <button class="btn btn-ghost btn-danger" type="button" onclick={() => deleteArchivedTask(drawerTask.id)}>Delete</button>
       {/if}
     </footer>
   </aside>
@@ -1254,18 +1548,71 @@
       </div>
       <div class="drawer-head-actions">
         <button class="btn btn-ghost btn-sm drawer-refresh" class:drawer-refresh-busy={drawerLoading} type="button" onclick={refreshDrawer} disabled={drawerLoading}>
-          <span class="drawer-refresh-icon" aria-hidden="true">↻</span>
+          <Icon name="refresh" size={14} class="drawer-refresh-icon" />
         </button>
         <button class="btn btn-ghost btn-sm" type="button" onclick={closeDrawer}>Close</button>
       </div>
     </header>
     <div class="drawer-tabs">
       <button class:active={drawerTab === 'messages'} type="button" onclick={() => (drawerTab = 'messages')}>Messages</button>
+      <button class:active={drawerTab === 'usage'} type="button" onclick={() => (drawerTab = 'usage')}>Usage</button>
       <button class:active={drawerTab === 'diff'} type="button" onclick={() => (drawerTab = 'diff')}>Diff</button>
       <button class:active={drawerTab === 'meta'} type="button" onclick={() => (drawerTab = 'meta')}>Meta</button>
     </div>
     <div class="drawer-body">
-      {#if drawerLoading && drawerMessages.length === 0}
+      {#if drawerTab === 'usage'}
+        {@const usageInfo = sessionUsage(drawerSession)}
+        {#if !usageInfo || (usageInfo.totalTokens === 0 && usageInfo.cost === 0)}
+          <div class="empty">No usage recorded for this session yet.</div>
+        {:else}
+          <div class="usage-panel">
+            <div class="usage-kpi-row">
+              <div class="usage-kpi usage-kpi-primary">
+                <span class="usage-kpi-label">Total tokens</span>
+                <span class="usage-kpi-value mono">{formatTokens(usageInfo.totalTokens)}</span>
+              </div>
+              <div class="usage-kpi">
+                <span class="usage-kpi-label">Est. cost</span>
+                <span class="usage-kpi-value mono dim">{formatCost(usageInfo.cost)}</span>
+              </div>
+            </div>
+            <div class="field">
+              <div class="meta-label">Model</div>
+              <div class="mono">
+                {#if isUnknownModel(usageInfo.model)}
+                  <span class="model-unknown" title="OpenCode did not record a model for this session">Unknown</span>
+                {:else}
+                  {usageInfo.model}
+                {/if}
+              </div>
+            </div>
+            <div class="field">
+              <div class="meta-label">Token breakdown</div>
+              <div class="usage-breakdown">
+                {#each [
+                  { label: 'Input', value: usageInfo.tokens.input, tone: 'input' },
+                  { label: 'Output', value: usageInfo.tokens.output, tone: 'output' },
+                  { label: 'Reasoning', value: usageInfo.tokens.reasoning, tone: 'reasoning' },
+                  { label: 'Cache read', value: usageInfo.tokens.cacheRead, tone: 'cache-read' },
+                  { label: 'Cache write', value: usageInfo.tokens.cacheWrite, tone: 'cache-write' },
+                ] as row}
+                  <div class="usage-row">
+                    <span class={`token-swatch token-${row.tone}`}></span>
+                    <span>{row.label}</span>
+                    <span class="mono usage-row-value">{formatTokens(row.value)}</span>
+                  </div>
+                {/each}
+              </div>
+            </div>
+            {#if usageInfo.tokens.cacheRead + usageInfo.tokens.input > 0}
+              <div class="field">
+                <div class="meta-label">Cache efficiency</div>
+                <div class="mono">{formatPercent(usageInfo.tokens.cacheRead / (usageInfo.tokens.cacheRead + usageInfo.tokens.input))}</div>
+              </div>
+            {/if}
+          </div>
+        {/if}
+      {:else if drawerLoading && drawerMessages.length === 0 && drawerTab !== 'usage'}
         <div class="empty">Loading…</div>
       {:else if drawerError}
         <div class="error">{drawerError}</div>
@@ -1338,14 +1685,14 @@
         {#if folderBrowseParent}
           <li>
             <button class="folder-picker-item" type="button" onclick={() => loadBrowse(folderBrowseParent)}>
-              <span class="folder-picker-icon">↩</span><span>Parent folder</span>
+              <Icon name="corner-up-left" size={14} class="folder-picker-icon" /><span>Parent folder</span>
             </button>
           </li>
         {/if}
         {#each folderBrowseChildren as child}
           <li>
             <button class="folder-picker-item" type="button" onclick={() => loadBrowse(child.path)}>
-              <span class="folder-picker-icon">▸</span><span>{child.name}</span>
+              <Icon name="folder" size={14} class="folder-picker-icon" /><span>{child.name}</span>
             </button>
           </li>
         {/each}
@@ -1371,38 +1718,6 @@
 {/if}
 
 <style>
-  .interval-hint {
-    margin-top: 6px;
-    font-size: 12px;
-  }
-  .plan-preview {
-    margin-top: 4px;
-  }
-  .field-label {
-    font-size: 13px;
-    color: var(--muted, #aaa);
-  }
-  .plan-step-list {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-  }
-  .plan-step-card {
-    padding: 10px;
-    border: 1px solid var(--border, #2a2a2a);
-    border-radius: 8px;
-  }
-  .plan-step-acceptance {
-    margin-top: 8px;
-    padding-left: 28px;
-  }
-  .plan-step-label {
-    font-size: 12px;
-  }
-  .plan-hint {
-    margin-top: 8px;
-    font-size: 12px;
-  }
   .check-log-list {
     list-style: none;
     margin: 0;

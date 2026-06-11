@@ -54,6 +54,16 @@ def archive_task(store: Any, task_id: str) -> dict[str, Any]:
     return {"ok": True, "taskId": task_id, "status": "archived", "store_version": sv}
 
 
+def delete_task(store: Any, task_id: str) -> dict[str, Any]:
+    task = store.get_task(task_id)
+    if not task:
+        return {"ok": False, "error": "not found"}
+    if str(task.get("status", "")).lower() != "archived":
+        return {"ok": False, "error": "only archived tasks can be deleted"}
+    sv = store.delete_task(task_id)
+    return {"ok": True, "taskId": task_id, "store_version": sv}
+
+
 async def full_state(
     client: Any,
     store: Any,
@@ -65,6 +75,7 @@ async def full_state(
     from openloom.runtime.session_status import (
         BUSY, is_visible_session, session_updated_at,
     )
+    from openloom.runtime.telemetry import aggregate_usage_periods
 
     health = await client.health()
     tasks = store.list_tasks()
@@ -135,12 +146,13 @@ async def full_state(
         ],
         "sessionStatus": session_status,
         "sessionError": session_error,
-        "metrics": _status_counts(tasks),
+        "metrics": _status_counts(tasks, session_status),
+        "usage": aggregate_usage_periods(sessions, now=time.time()),
         "now": time.time(),
     }
 
 
-def _status_counts(tasks: list[dict[str, Any]]) -> dict[str, int]:
+def _status_counts(tasks: list[dict[str, Any]], session_status: dict[str, Any]) -> dict[str, int]:
     running = waiting = failed = completed = 0
     for task in tasks:
         status = str(task.get("status", "")).lower()
@@ -152,4 +164,23 @@ def _status_counts(tasks: list[dict[str, Any]]) -> dict[str, int]:
             completed += 1
         elif status in {"running", "pending"}:
             running += 1
-    return {"running": running, "waiting": waiting, "failed": failed, "completedToday": completed}
+
+    sessions_busy = sessions_idle = sessions_retry = 0
+    for value in session_status.values():
+        text = str(value.get("type") if isinstance(value, dict) else value).lower()
+        if text in {"busy", "running", "streaming", "working"}:
+            sessions_busy += 1
+        elif text in {"retry", "waiting", "permission"}:
+            sessions_retry += 1
+        else:
+            sessions_idle += 1
+
+    return {
+        "running": running,
+        "waiting": waiting,
+        "failed": failed,
+        "completedToday": completed,
+        "sessionsBusy": sessions_busy,
+        "sessionsIdle": sessions_idle,
+        "sessionsRetry": sessions_retry,
+    }

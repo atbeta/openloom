@@ -251,6 +251,15 @@ def create_app(
     async def archive(task_id: str):
         return task_routes.archive_task(store, task_id)
 
+    @app.delete("/api/tasks/{task_id}")
+    async def delete_task(task_id: str):
+        result = task_routes.delete_task(store, task_id)
+        if not result.get("ok"):
+            if result.get("error") == "not found":
+                raise HTTPException(status_code=404, detail="Task not found")
+            raise HTTPException(status_code=400, detail=result.get("error", "delete failed"))
+        return result
+
     @app.get("/api/state")
     async def state():
         if client is None or monitor is None or settings is None:

@@ -85,6 +85,20 @@ def test_empty_update_returns_current_version(tmp_path: Path) -> None:
     assert store.update_task("nonexistent") == 0
 
 
+def test_delete_task_bumps_version(tmp_path: Path) -> None:
+    store = _make_store(tmp_path)
+    store.create_task({
+        "id": "t1",
+        "name": "demo",
+        "spec": {"name": "demo"},
+        "workspace": str(tmp_path),
+    })
+    before = store.store_version
+    sv = store.delete_task("t1")
+    assert sv == before + 1
+    assert store.get_task("t1") is None
+
+
 def _writer(db_path: str, task_id: str) -> int:
     store = Store(Path(db_path))
     result = store.create_task({

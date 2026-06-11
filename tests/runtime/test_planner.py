@@ -73,3 +73,12 @@ def test_task_plan_from_dict_without_intent() -> None:
     assert plan.goal == "First step"
     spec = task_spec_from_plan(plan, "/tmp/ws")
     assert spec.initial_prompt == "First step"
+
+
+def test_task_plan_from_dict_prefers_goal_for_name() -> None:
+    plan = TaskPlan.from_dict({
+        "goal": "Users can log in with JWT",
+        "steps": [{"title": "Add middleware", "acceptance": ["route protected"]}],
+    })
+    assert plan.name == "Users can log in with JWT"
+    assert plan.goal == "Users can log in with JWT"

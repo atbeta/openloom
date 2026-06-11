@@ -39,10 +39,12 @@ class TaskPlan:
         steps = _parse_plan_steps(data.get("steps") or [])
         goal = str(data.get("goal") or intent or "").strip()
         name = str(data.get("name") or "").strip()
+        if not name and goal:
+            name = _title_from_prompt(goal)
         if not name and steps:
             name = steps[0].title[:60]
         if not name:
-            name = _title_from_prompt(intent or goal)
+            name = _title_from_prompt(intent or "Untitled task")
         if not goal:
             goal = name
         global_acceptance = [

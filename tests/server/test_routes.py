@@ -89,7 +89,7 @@ def test_api_state_shape(client: TestClient) -> None:
     body = r.json()
     for key in ("server", "recentWorkspaces", "tasks", "sessions",
                 "sessionsByDirectory", "archivedSessions", "sessionStatus",
-                "metrics", "now"):
+                "metrics", "usage", "now"):
         assert key in body, f"missing key: {key}"
 
 
@@ -117,6 +117,29 @@ def test_task_pause_resume_complete_archive(client: TestClient) -> None:
     assert client.post(f"/api/tasks/{tid}/resume").json()["status"] == "running"
     assert client.post(f"/api/tasks/{tid}/complete").json()["status"] == "completed"
     assert client.post(f"/api/tasks/{tid}/archive").json()["status"] == "archived"
+
+
+def test_delete_archived_task(client: TestClient) -> None:
+    r = client.post("/api/tasks", json={
+        "format": "yaml",
+        "spec": "name: t\nworkspace: /tmp/openloom-smoke\nsteps:\n  - one\n",
+    })
+    tid = r.json()["taskId"]
+    assert client.post(f"/api/tasks/{tid}/archive").json()["status"] == "archived"
+    deleted = client.delete(f"/api/tasks/{tid}")
+    assert deleted.status_code == 200, deleted.text
+    assert deleted.json()["ok"] is True
+    assert client.get(f"/api/tasks/{tid}").json().get("error") == "not found"
+
+
+def test_delete_active_task_rejected(client: TestClient) -> None:
+    r = client.post("/api/tasks", json={
+        "format": "yaml",
+        "spec": "name: t\nworkspace: /tmp/openloom-smoke\nsteps:\n  - one\n",
+    })
+    tid = r.json()["taskId"]
+    rejected = client.delete(f"/api/tasks/{tid}")
+    assert rejected.status_code == 400
 
 
 def test_create_task_rejects_empty_prompt(client: TestClient) -> None:
