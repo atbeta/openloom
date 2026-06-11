@@ -1,19 +1,40 @@
 from __future__ import annotations
 
+import contextlib
+import time
+import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from openloom import __version__
 from openloom.server.cold import require_fastapi
 
 
-def create_app(harness: Any, store: Any, bus: Any, web_sink: Any, *, client: Any = None, monitor: Any = None):
+def create_app(
+    harness: Any,
+    store: Any,
+    bus: Any,
+    web_sink: Any,
+    *,
+    client: Any = None,
+    monitor: Any = None,
+    recent: Any = None,
+    settings: Any = None,
+    parse_spec: Any = None,
+    pick_folder: Any = None,
+):
     require_fastapi()
 
-    from fastapi import FastAPI, Request
+    from fastapi import FastAPI, HTTPException, Query, Request
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse
     from fastapi.staticfiles import StaticFiles
+
+    # Make Request / Query / etc. resolvable from module globals so future
+    # annotation strings inside nested route handlers can be evaluated.
+    globals()["Request"] = Request
+    globals()["Query"] = Query
+    globals()["HTTPException"] = HTTPException
 
     app = FastAPI(title="OpenLoom", version=__version__)
 
@@ -36,6 +57,65 @@ def create_app(harness: Any, store: Any, bus: Any, web_sink: Any, *, client: Any
     async def get_task(task_id: str):
         return task_routes.task_detail(store, task_id)
 
+    @app.post("/api/tasks")
+    async def create_task(req: Request):
+        if parse_spec is None or settings is None:
+            raise HTTPException(status_code=501, detail="Task creation needs a parse_spec binding")
+        body = await req.json()
+        spec_format = body.get("format", "yaml")
+        spec_text = body.get("spec", "")
+        if not spec_text:
+            raise HTTPException(status_code=400, detail="spec is required")
+        try:
+            spec = parse_spec(spec_text, spec_format)
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=400, detail=f"Invalid task spec: {exc}") from exc
+        if not spec.workspace:
+            raise HTTPException(status_code=400, detail="Task spec must include workspace")
+        from pathlib import Path as _P
+        cwd = str(_P(spec.workspace).expanduser().resolve())
+        if not settings.is_allowed_workspace(cwd):
+            raise HTTPException(status_code=400, detail="Workspace not allowed")
+        spec.workspace = cwd
+        task_id = f"task_{uuid.uuid4().hex[:12]}"
+        now = time.time()
+        task = {
+            "id": task_id, "name": spec.name, "spec": spec.to_dict(),
+            "workspace": cwd, "status": "pending",
+            "check_interval_seconds": spec.check_interval_seconds,
+            "next_check_at": now,
+        }
+        store.create_task(task)
+        if recent is not None:
+            recent.record(cwd)
+        return {"ok": True, "taskId": task_id, "status": "pending", "name": spec.name}
+
+    @app.post("/api/tasks/{task_id}/pause")
+    async def pause(task_id: str):
+        task = store.get_task(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
+        store.update_task(task_id, status="paused", next_check_at=None)
+        return {"ok": True, "taskId": task_id, "status": "paused"}
+
+    @app.post("/api/tasks/{task_id}/resume")
+    async def resume(task_id: str):
+        task = store.get_task(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
+        store.update_task(task_id, status="running", next_check_at=time.time())
+        return {"ok": True, "taskId": task_id, "status": "running"}
+
+    @app.post("/api/tasks/{task_id}/complete")
+    async def complete(task_id: str):
+        task = store.get_task(task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
+        store.update_task(task_id, status="completed", next_check_at=None,
+                          last_summary="Marked complete manually", progress=1.0)
+        store.append_check_log(task_id, status="completed", summary="Marked complete manually")
+        return {"ok": True, "taskId": task_id, "status": "completed"}
+
     @app.get("/api/events")
     async def sse_events():
         return await task_routes.event_stream(store, web_sink)
@@ -43,6 +123,64 @@ def create_app(harness: Any, store: Any, bus: Any, web_sink: Any, *, client: Any
     @app.post("/api/tasks/{task_id}/archive")
     async def archive(task_id: str):
         return task_routes.archive_task(store, task_id)
+
+    @app.get("/api/state")
+    async def state():
+        if client is None or monitor is None or settings is None:
+            raise HTTPException(status_code=501, detail="state requires client+monitor+settings")
+        return await task_routes.full_state(client, store, monitor, recent, settings)
+
+    @app.get("/api/recent-workspaces")
+    async def list_recent():
+        if recent is None:
+            return {"workspaces": []}
+        return {"workspaces": recent.list()}
+
+    @app.delete("/api/recent-workspaces")
+    async def remove_recent(path: str = Query(...)):
+        if recent is None:
+            return {"ok": True, "removed": False}
+        removed = recent.remove(path)
+        return {"ok": True, "removed": removed, "path": path}
+
+    @app.get("/api/browse")
+    async def browse(path: str | None = Query(default=None)):
+        if settings is None:
+            raise HTTPException(status_code=501, detail="browse needs settings binding")
+        from pathlib import Path as _P
+        if path:
+            root_path = _P(path).expanduser().resolve()
+        elif recent is not None:
+            existing = recent.list(limit=1)
+            root_path = _P(existing[0]).expanduser().resolve() if existing else _P.home().resolve()
+        else:
+            root_path = _P.home().resolve()
+        if not settings.is_allowed_workspace(str(root_path)):
+            raise HTTPException(status_code=400, detail="Path is not accessible")
+        if not root_path.exists() or not root_path.is_dir():
+            raise HTTPException(status_code=404, detail="Directory not found")
+        children = []
+        for child in sorted(root_path.iterdir(), key=lambda p: p.name.lower()):
+            if child.is_dir() and not child.name.startswith("."):
+                children.append({"name": child.name, "path": str(child)})
+        parent = root_path.parent
+        return {"path": str(root_path),
+                "parent": str(parent) if parent != root_path else None,
+                "children": children[:200]}
+
+    @app.post("/api/pick-folder")
+    async def pick_folder_endpoint():
+        if pick_folder is None:
+            return {"ok": False, "unsupported": True}
+        import asyncio
+        picked = await asyncio.to_thread(pick_folder)
+        if not picked:
+            return {"ok": False, "cancelled": True}
+        if settings is not None and not settings.is_allowed_workspace(picked):
+            raise HTTPException(status_code=400, detail="Workspace not allowed")
+        if recent is not None:
+            recent.record(picked)
+        return {"ok": True, "path": picked}
 
     if client and monitor:
         @app.get("/api/sessions")
@@ -60,7 +198,34 @@ def create_app(harness: Any, store: Any, bus: Any, web_sink: Any, *, client: Any
         @app.post("/api/dispatch")
         async def dispatch(req: Request):
             body = await req.json()
-            return await session_routes.dispatch_prompt(client, body)
+            return await session_routes.dispatch_prompt(client, body, recent=recent, settings=settings)
+
+        @app.post("/api/sessions/{session_id}/archive")
+        async def archive_session(session_id: str):
+            try:
+                await client.set_archived(session_id, int(time.time() * 1000))
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(status_code=502, detail=f"opencode: {exc}")
+            return {"ok": True, "sessionId": session_id, "archived": True}
+
+        @app.delete("/api/sessions/{session_id}/archive")
+        async def unarchive_session(session_id: str):
+            try:
+                await client.set_archived(session_id, 0)
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(status_code=502, detail=f"opencode: {exc}")
+            return {"ok": True, "sessionId": session_id, "archived": False}
+
+        @app.post("/api/sessions/{session_id}/delete")
+        async def hard_delete_session(session_id: str):
+            ok = False
+            try:
+                ok = await client.delete_session(session_id)
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(status_code=502, detail=f"opencode: {exc}")
+            if not ok:
+                raise HTTPException(status_code=404, detail="Session not found or already deleted")
+            return {"ok": True, "sessionId": session_id, "deleted": True}
 
     static_dir = Path(__file__).resolve().parent / "static"
     app_dir = static_dir / "app"

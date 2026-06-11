@@ -186,6 +186,19 @@ class OpenCodeClient:
                 return [item for item in diff if isinstance(item, dict)]
         return []
 
+    async def set_archived(self, session_id: str, archived: int | None) -> dict[str, Any]:
+        return await self._request_json(
+            "PATCH", f"/session/{session_id}",
+            json={"time": {"archived": archived}},
+        )
+
+    async def delete_session(self, session_id: str) -> bool:
+        try:
+            response = await self._request("DELETE", f"/session/{session_id}")
+        except Exception:
+            return False
+        return response.status_code == 200
+
     async def _request_json(self, method: str, path: str, **kwargs: Any) -> Any:
         response = await self._request(method, path, **kwargs)
         if not response.content:

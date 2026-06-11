@@ -17,10 +17,12 @@ async def run_serve(settings: Any) -> None:
 
     from openloom.levels.server.monitor import SessionMonitor
     from openloom.server.app import create_app
+    from openloom.server.recent import RecentWorkspaces
 
     import uvicorn
 
     store = Store(settings.database_path)
+    recent = RecentWorkspaces(settings.database_path.parent / "recent.sqlite3")
     client = OpenCodeClient(settings.opencode_url, settings.opencode_username, settings.opencode_password)
 
     health = await client.health()
@@ -76,6 +78,9 @@ async def run_serve(settings: Any) -> None:
     app = create_app(
         harness=harness, store=store, bus=bus, web_sink=web_sink,
         client=client, monitor=monitor,
+        recent=recent, settings=settings,
+        parse_spec=prompts.parse_task_spec,
+        pick_folder=_native_pick_folder,
     )
 
     due = store.list_due_tasks()
@@ -97,3 +102,38 @@ async def run_serve(settings: Any) -> None:
             await harness_task
         with asyncio.suppress(asyncio.CancelledError):
             await monitor_task
+
+
+def _native_pick_folder(initial: str | None = None) -> str | None:
+    import platform
+    import subprocess
+
+    if platform.system() == "Darwin":
+        script = (
+            'set chosenFolder to choose folder with prompt "Select workspace"\n'
+            'POSIX path of chosenFolder'
+        )
+        if initial:
+            script = script.replace(
+                'choose folder',
+                f'choose folder with prompt "Select workspace" default location POSIX file "{initial}"',
+            )
+        result = subprocess.run(
+            ["osascript", "-e", script], capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode != 0:
+            return None
+        return result.stdout.strip() or None
+    try:
+        import tkinter as tk
+        from tkinter import filedialog
+    except ImportError:
+        return None
+    root = tk.Tk()
+    root.withdraw()
+    root.attributes("-topmost", True)
+    try:
+        path = filedialog.askdirectory(initialdir=initial, mustexist=True)
+    finally:
+        root.destroy()
+    return path or None
