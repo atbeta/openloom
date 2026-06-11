@@ -1,0 +1,348 @@
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+from typing import Any
+
+import yaml
+
+
+@dataclass
+class TaskSpec:
+    name: str
+    workspace: str
+    goal: str
+    steps: list[str] = field(default_factory=list)
+    acceptance: list[str] = field(default_factory=list)
+    mode: str = "normal"
+    agent: str = "opencode"
+    check_interval_seconds: int = 300
+    initial_prompt: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "name": self.name,
+            "workspace": self.workspace,
+            "goal": self.goal,
+            "steps": self.steps,
+            "acceptance": self.acceptance,
+            "mode": self.mode,
+            "agent": self.agent,
+            "check_interval_seconds": self.check_interval_seconds,
+            "initial_prompt": self.initial_prompt,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> TaskSpec:
+        steps = [str(s).strip() for s in (data.get("steps") or []) if str(s).strip()]
+        acceptance = [str(a).strip() for a in (data.get("acceptance") or []) if str(a).strip()]
+        interval = _parse_interval_seconds(data)
+        return cls(
+            name=str(data.get("name") or "Untitled task").strip() or "Untitled task",
+            workspace=str(data.get("workspace") or "").strip(),
+            goal=str(data.get("goal") or "").strip(),
+            steps=steps,
+            acceptance=acceptance,
+            mode=str(data.get("mode") or "normal").strip() or "normal",
+            agent=str(data.get("agent") or "opencode").strip() or "opencode",
+            check_interval_seconds=interval,
+            initial_prompt=(str(data["initial_prompt"]).strip() if data.get("initial_prompt") else None),
+        )
+
+
+def _interval_from_text(value: str, *, default_seconds: int = 300) -> int:
+    raw = value.strip().lower()
+    digits = int(re.sub(r"[^0-9]", "", raw) or "0")
+    if not digits:
+        return default_seconds
+    if raw.endswith("m"):
+        return max(60, digits * 60)
+    if raw.endswith("s"):
+        return max(10, digits)
+    return max(60, digits * 60)
+
+
+def _parse_interval_seconds(data: dict[str, Any]) -> int:
+    if data.get("check_interval_minutes") is not None:
+        return max(60, int(data["check_interval_minutes"]) * 60)
+    if data.get("check_interval_seconds") is not None:
+        return max(10, int(data["check_interval_seconds"]))
+    if data.get("check_interval") is not None:
+        value = data["check_interval"]
+        if isinstance(value, str):
+            return _interval_from_text(value)
+        return max(60, int(value) * 60)
+    return 300
+
+
+def parse_task_spec(text: str, fmt: str = "yaml") -> TaskSpec:
+    normalized = (fmt or "yaml").strip().lower()
+    if normalized == "markdown":
+        return _parse_markdown(text)
+    return TaskSpec.from_dict(_parse_yaml(text))
+
+
+def _parse_yaml(text: str) -> dict[str, Any]:
+    data = yaml.safe_load(text)
+    if not isinstance(data, dict):
+        raise ValueError("Task spec must be a YAML mapping")
+    return data
+
+
+def _parse_markdown(text: str) -> TaskSpec:
+    lines = text.splitlines()
+    name = "Untitled task"
+    workspace = ""
+    mode = "normal"
+    agent = "opencode"
+    check_interval_seconds = 300
+    goal = ""
+    acceptance: list[str] = []
+    steps: list[str] = []
+
+    meta_re = re.compile(r"^(workspace|mode|agent|check_interval(?:_seconds)?)\s*:\s*(.+)$", re.I)
+    for line in lines[:20]:
+        if line.startswith("# "):
+            name = line[2:].strip() or name
+            continue
+        m = meta_re.match(line.strip())
+        if not m:
+            continue
+        key, value = m.group(1).lower(), m.group(2).strip()
+        if key == "workspace":
+            workspace = value.strip("` ")
+        elif key == "mode":
+            mode = value
+        elif key == "agent":
+            agent = value
+        elif key.startswith("check_interval"):
+            check_interval_seconds = _interval_from_text(value)
+
+    section = ""
+    for line in lines:
+        stripped = line.strip()
+        if stripped.lower().startswith("## goal"):
+            section = "goal"
+            continue
+        if stripped.lower().startswith("## acceptance"):
+            section = "acceptance"
+            continue
+        if stripped.lower().startswith("## steps"):
+            section = "steps"
+            continue
+        if stripped.startswith("## "):
+            section = ""
+            continue
+        if not stripped:
+            continue
+
+        if section == "goal":
+            goal = f"{goal}\n{stripped}".strip() if goal else stripped
+        elif section == "acceptance":
+            item = re.sub(r"^[-*]\s*", "", stripped)
+            item = re.sub(r"^\[[ xX]\]\s*", "", item).strip()
+            if item:
+                acceptance.append(item)
+        elif section == "steps":
+            item = re.sub(r"^\d+\.\s*", "", stripped).strip()
+            if item:
+                steps.append(item)
+
+    return TaskSpec(
+        name=name,
+        workspace=workspace,
+        goal=goal,
+        steps=steps,
+        acceptance=acceptance,
+        mode=mode,
+        agent=agent,
+        check_interval_seconds=check_interval_seconds,
+    )
+
+
+def build_bootstrap_prompt(spec: TaskSpec, *, current_step: int = 0) -> str:
+    if spec.initial_prompt:
+        return spec.initial_prompt
+
+    steps_block = "\n".join(f"{i + 1}. {step}" for i, step in enumerate(spec.steps)) or "1. Complete the goal"
+    acceptance_block = "\n".join(f"- [ ] {item}" for item in spec.acceptance) or "- [ ] Goal achieved"
+    step_name = spec.steps[current_step] if 0 <= current_step < len(spec.steps) else "Finish remaining work"
+
+    return f"""You are executing an OpenLoom harness task.
+
+Task: {spec.name}
+Workspace: {spec.workspace}
+
+Goal:
+{spec.goal or spec.name}
+
+Steps:
+{steps_block}
+
+Acceptance criteria:
+{acceptance_block}
+
+Current focus: step {current_step + 1} — {step_name}
+
+Proceed through steps autonomously. Do not ask for confirmation between steps.
+
+When you complete a step, include a line: STEP DONE: <number>
+When all acceptance criteria are satisfied, include a line: TASK COMPLETE
+"""
+
+
+def build_periodic_check_prompt(
+    spec: TaskSpec,
+    *,
+    current_step: int,
+    progress: dict[str, Any],
+    completed_steps: list[int],
+) -> str:
+    step_lines: list[str] = []
+    for index, step in enumerate(spec.steps):
+        step_number = index + 1
+        markers = completed_steps + ([progress["step_done"]] if progress["step_done"] else [])
+        done = step_number in markers or progress["step_done"] >= step_number
+        step_lines.append(f"{step_number}. {step}{' (done)' if done else ''}")
+    steps_block = "\n".join(step_lines) or "1. Complete the goal"
+    acceptance_block = "\n".join(f"- [ ] {item}" for item in spec.acceptance) or "- [ ] Goal achieved"
+    focus_index = min(current_step, len(spec.steps) - 1) if spec.steps else 0
+    focus_step = spec.steps[focus_index] if spec.steps else "Finish remaining work"
+
+    return f"""OpenLoom harness periodic check for "{spec.name}".
+
+The session is idle. Confirm task status before we schedule the next check.
+
+Steps:
+{steps_block}
+
+Acceptance:
+{acceptance_block}
+
+Reply with ONE of:
+- STEP DONE: <number> — if a step is finished (required after each step)
+- TASK COMPLETE — if all acceptance criteria are satisfied
+- Or continue working on step {focus_index + 1}: {focus_step}
+
+Proceed autonomously. Do not ask for confirmation."""
+
+
+def detect_progress(text: str, spec: TaskSpec) -> dict[str, Any]:
+    upper = text.upper()
+    task_complete = "TASK COMPLETE" in upper
+    step_done = 0
+    for match in re.finditer(r"STEP DONE:\s*(\d+)", text, re.I):
+        step_done = max(step_done, int(match.group(1)))
+
+    checked = len(re.findall(r"\[[xX]\]", text))
+    total_acceptance = len(spec.acceptance)
+    acceptance_progress = (
+        min(1.0, checked / total_acceptance) if total_acceptance else (1.0 if task_complete else 0.0)
+    )
+
+    return {
+        "task_complete": task_complete,
+        "step_done": step_done,
+        "acceptance_checked": checked,
+        "acceptance_total": total_acceptance,
+        "acceptance_progress": acceptance_progress,
+    }
+
+
+def message_role(message: dict[str, Any]) -> str:
+    info = message.get("info") if isinstance(message.get("info"), dict) else message
+    if isinstance(info, dict) and info.get("role"):
+        return str(info["role"]).lower()
+    return str(message.get("role") or message.get("type") or "message").lower()
+
+
+def _message_text(message: dict[str, Any]) -> str:
+    if isinstance(message.get("text"), str):
+        return message["text"]
+    parts = message.get("parts") or message.get("content") or []
+    if not isinstance(parts, list):
+        return ""
+    out: list[str] = []
+    for part in parts:
+        if isinstance(part, str):
+            out.append(part)
+        elif isinstance(part, dict):
+            out.append(str(part.get("text") or part.get("content") or ""))
+    return "".join(out)
+
+
+def assistant_transcript(messages: list[dict[str, Any]], limit: int | None = None) -> str:
+    assistants = [m for m in messages if message_role(m) == "assistant"]
+    if limit is None:
+        return "\n\n".join(_message_text(m) for m in assistants if _message_text(m))
+    return "\n\n".join(_message_text(m) for m in assistants[-limit:] if _message_text(m))
+
+
+def detect_progress_from_messages(messages: list[dict[str, Any]], spec: TaskSpec) -> dict[str, Any]:
+    return detect_progress(assistant_transcript(messages), spec)
+
+
+_CONTINUE_PATTERNS = (
+    "should i proceed",
+    "should i continue",
+    "want me to proceed",
+    "want me to continue",
+    "shall i proceed",
+    "ready for step",
+    "may i proceed",
+    "do you want me to",
+)
+
+
+def agent_awaiting_continue(text: str) -> bool:
+    lower = text.lower()
+    return any(pattern in lower for pattern in _CONTINUE_PATTERNS)
+
+
+def needs_continue_reply(messages: list[dict[str, Any]]) -> bool:
+    awaiting_index: int | None = None
+    for idx in range(len(messages) - 1, -1, -1):
+        if message_role(messages[idx]) != "assistant":
+            continue
+        if agent_awaiting_continue(_message_text(messages[idx])):
+            awaiting_index = idx
+            break
+    if awaiting_index is None:
+        return False
+    for idx in range(awaiting_index + 1, len(messages)):
+        if message_role(messages[idx]) == "user":
+            return False
+    return True
+
+
+def messages_indicate_busy(messages: list[dict[str, Any]]) -> bool:
+    for message in reversed(messages):
+        info = message.get("info") if isinstance(message.get("info"), dict) else message
+        if isinstance(info, dict) and info.get("role") in {"assistant", "agent"}:
+            if _message_is_aborted(info):
+                return False
+            time_info = info.get("time") or {}
+            if not time_info.get("completed"):
+                return True
+            for part in message.get("parts") or []:
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") != "tool":
+                    continue
+                state = part.get("state") or {}
+                tool_status = str(state.get("status", "")).lower()
+                if tool_status in {"running", "pending", "active"}:
+                    return True
+            break
+    return False
+
+
+def _message_is_aborted(info: dict[str, Any]) -> bool:
+    error = info.get("error")
+    if not isinstance(error, dict):
+        return False
+    name = str(error.get("name", "")).lower()
+    if "abort" in name or "cancel" in name or "stop" in name:
+        return True
+    message = str(error.get("message", "")).lower()
+    return "abort" in message or "cancel" in message or "stopped" in message

@@ -1,0 +1,14 @@
+name: Fix SSE reconnect
+workspace: /Users/beta/Projects/agent-deck
+mode: normal
+agent: opencode
+check_interval_minutes: 5
+goal: |
+  Fix SSE reconnect after network drop.
+acceptance:
+  - SSE reconnects automatically after network drop
+  - Existing tests pass
+steps:
+  - Investigate current SSE implementation
+  - Implement reconnect with backoff
+  - Add regression coverage
