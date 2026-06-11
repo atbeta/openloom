@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any
 
 
@@ -27,32 +28,60 @@ async def session_diff(client: Any, session_id: str) -> dict[str, Any]:
     return {"diff": diff}
 
 
-async def dispatch_prompt(
-    client: Any, request: dict[str, Any],
-    *, recent: Any = None, settings: Any = None,
-) -> dict[str, Any]:
-    target = request.get("target", {})
-    prompt = request.get("prompt", "")
-    agent = request.get("agent")
+def _title_from_prompt(prompt: str) -> str:
+    first = " ".join(prompt.strip().split())
+    if not first:
+        return "Untitled"
+    return first[:72] + ("…" if len(first) > 72 else "")
 
+
+async def dispatch_prompt(
+    client: Any,
+    request: dict[str, Any],
+    *,
+    recent: Any = None,
+    settings: Any = None,
+) -> dict[str, Any]:
+    """One-shot prompt dispatch — OpenCode API only, no harness task."""
+    prompt = str(request.get("prompt") or "").strip()
     if not prompt:
         return {"ok": False, "error": "prompt is required"}
 
-    from pathlib import Path as _P
+    agent = request.get("agent")
+    agent_name = None if agent in (None, "opencode") else str(agent)
 
-    cwd = request.get("cwd")
-    if cwd:
-        resolved = str(_P(cwd).expanduser().resolve())
-        if settings is not None and not settings.is_allowed_workspace(resolved):
+    target = request.get("target") or {}
+    session_id: str | None = None
+    cwd: str | None = None
+
+    if isinstance(target, dict) and target.get("type") == "workspace":
+        raw = target.get("cwd") or request.get("cwd")
+        if not raw:
+            return {"ok": False, "error": "workspace cwd is required"}
+        cwd = str(Path(str(raw)).expanduser().resolve())
+        if settings is not None and not settings.is_allowed_workspace(cwd):
             return {"ok": False, "error": "Workspace not allowed"}
-        session = await client.create_session(cwd=resolved, title=prompt[:72])
+        title = _title_from_prompt(prompt)
+        session = await client.create_session(cwd=cwd, title=title)
         session_id = session["id"]
         if recent is not None:
-            recent.record(resolved)
+            recent.record(cwd)
+    elif isinstance(target, dict) and target.get("type") == "session":
+        session_id = target.get("sessionId")
+        if not session_id:
+            return {"ok": False, "error": "sessionId is required"}
+    elif request.get("cwd"):
+        cwd = str(Path(str(request["cwd"])).expanduser().resolve())
+        if settings is not None and not settings.is_allowed_workspace(cwd):
+            return {"ok": False, "error": "Workspace not allowed"}
+        session = await client.create_session(cwd=cwd, title=_title_from_prompt(prompt))
+        session_id = session["id"]
+        if recent is not None:
+            recent.record(cwd)
     elif isinstance(target, dict) and target.get("sessionId"):
         session_id = target["sessionId"]
     else:
-        return {"ok": False, "error": "target sessionId or cwd required"}
+        return {"ok": False, "error": "target workspace or session is required"}
 
-    await client.send_prompt_async(session_id=session_id, prompt=prompt, agent=agent)
-    return {"ok": True, "sessionId": session_id}
+    await client.send_prompt_async(session_id=session_id, prompt=prompt, agent=agent_name)
+    return {"ok": True, "sessionId": session_id, "title": _title_from_prompt(prompt)}

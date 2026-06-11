@@ -7,24 +7,29 @@ BUSY = "busy"
 RETRY = "retry"
 
 
-def normalize_session_status(value: Any, *, default: str | None = IDLE) -> str | None:
+def extract_status_type(value: Any) -> str | None:
     if isinstance(value, str):
         text = value.strip().lower()
-    elif isinstance(value, dict):
-        text = str(value.get("type") or value.get("status") or value.get("state") or "").strip().lower()
-    else:
-        return default
+        return text or None
+    if isinstance(value, dict):
+        for key in ("type", "status", "state"):
+            raw = value.get(key)
+            if raw:
+                return str(raw).strip().lower()
+    return None
 
-    if not text:
-        return default
 
-    if text in {BUSY, "running", "streaming", "working"}:
+def normalize_session_status(value: Any, *, default: str | None = IDLE) -> str | None:
+    status_type = extract_status_type(value)
+    if not status_type:
+        return default
+    if status_type in {BUSY, "running", "streaming", "working"}:
         return BUSY
-    if text in {RETRY, "waiting", "permission"}:
+    if status_type in {RETRY, "waiting", "permission"}:
         return RETRY
-    if text in {IDLE, "available", "complete", "completed", "stopped", "aborted"}:
+    if status_type in {IDLE, "available", "complete", "completed", "stopped", "aborted"}:
         return IDLE
-    return text
+    return status_type
 
 
 def session_parent_id(session: dict[str, Any]) -> str | None:

@@ -9,16 +9,7 @@ from .events import Event, EventBus, EventType
 
 
 class HarnessRunner:
-    def __init__(
-        self,
-        opencode: Any,
-        bus: EventBus,
-        store: Any,
-        checker: Any,
-        prompts: Any,
-        status: Any,
-        allowed_workspace: Any = None,
-    ) -> None:
+    def __init__(self, opencode: Any, bus: EventBus, store: Any, checker: Any, prompts: Any, status: Any, allowed_workspace: Any = None) -> None:
         self.opencode = opencode
         self.bus = bus
         self.store = store
@@ -55,12 +46,8 @@ class HarnessRunner:
         result = self.store.create_task(task)
         sv = result.get("store_version", 0)
 
-        self.bus.emit(Event(
-            type=EventType.TASK_CREATED,
-            task_id=task_id,
-            store_version=sv,
-            data={"spec": spec.to_dict(), "workspace": spec.workspace},
-        ))
+        self.bus.emit(Event(type=EventType.TASK_CREATED, task_id=task_id, store_version=sv,
+                            data={"spec": spec.to_dict(), "workspace": spec.workspace}))
         return task_id
 
     async def tick(self) -> None:
@@ -225,30 +212,47 @@ class HarnessRunner:
         ))
 
         if status == "completed":
-            self.bus.emit(Event(
-                type=EventType.TASK_COMPLETED,
-                task_id=task_id,
-                store_version=sv,
-                data={"summary": summary, "progress": step_progress},
-            ))
+            self.bus.emit(Event(type=EventType.TASK_COMPLETED, task_id=task_id, store_version=sv,
+                                data={"summary": summary, "progress": step_progress}))
         elif status == "failed":
-            self.bus.emit(Event(
-                type=EventType.TASK_FAILED,
-                task_id=task_id,
-                store_version=sv,
-                data={"summary": summary},
-            ))
+            self.bus.emit(Event(type=EventType.TASK_FAILED, task_id=task_id, store_version=sv, data={"summary": summary}))
 
     async def _start_task(self, task: dict[str, Any]) -> None:
         task_id = task["id"]
         spec = self.prompts.TaskSpec.from_dict(task["spec"])
+        session_id = task.get("active_session_id")
+        attached = bool(session_id)
 
-        if not self.allowed_workspace(spec.workspace):
-            raise ValueError("Workspace is outside allowed roots")
+        if session_id:
+            try:
+                sessions = await self.opencode.list_sessions()
+            except Exception:
+                sessions = []
+            match = next((s for s in sessions if s.get("id") == session_id), None)
+            if not match:
+                raise ValueError(f"Session {session_id} no longer exists")
+            directory = match.get("directory") or spec.workspace
+            if directory and self.allowed_workspace(directory):
+                spec = self.prompts.TaskSpec.from_dict({**spec.to_dict(), "workspace": directory})
+        else:
+            if not self.allowed_workspace(spec.workspace):
+                raise ValueError("Workspace is outside allowed roots")
+            session = await self.opencode.create_session(cwd=spec.workspace, title=spec.name)
+            session_id = session["id"]
 
-        session = await self.opencode.create_session(cwd=spec.workspace, title=spec.name)
-        session_id = session["id"]
-        prompt = self.prompts.build_bootstrap_prompt(spec, current_step=int(task.get("current_step") or 0))
+        raw_interval = task.get("check_interval_seconds")
+        interval = int(raw_interval if raw_interval is not None else spec.check_interval_seconds)
+        one_shot = interval <= 0
+        structured = bool(spec.steps or spec.acceptance or spec.step_acceptance)
+        if structured or not one_shot:
+            prompt = self.prompts.build_bootstrap_prompt(
+                spec, current_step=int(task.get("current_step") or 0),
+            )
+        else:
+            prompt = spec.initial_prompt or spec.goal
+        if not prompt:
+            raise ValueError("Task requires a prompt or structured plan")
+
         await self.opencode.send_prompt_async(
             session_id=session_id,
             prompt=prompt,
@@ -260,38 +264,24 @@ class HarnessRunner:
             session_ids.append(session_id)
 
         now = time.time()
+        summary = (
+            (f"Prompt sent to session {session_id}" if attached else "Prompt sent")
+            if one_shot
+            else (f"Harness attached to session {session_id}" if attached else "Harness started and bootstrap prompt sent")
+        )
         sv = self.store.update_task(
             task_id,
             status="running",
             active_session_id=session_id,
             session_ids=session_ids,
+            spec=spec.to_dict(),
             last_check_at=now,
-            next_check_at=now + spec.check_interval_seconds,
+            next_check_at=None if one_shot else now + interval,
             error=None,
         )
-        self.store.append_check_log(
-            task_id,
-            status="running",
-            summary="Harness started and bootstrap prompt sent",
-            detail=f"session={session_id}",
-        )
-
-        self.bus.emit(Event(
-            type=EventType.TASK_STARTED,
-            task_id=task_id,
-            store_version=sv,
-            data={"session_id": session_id},
-        ))
-        self.bus.emit(Event(
-            type=EventType.LOG_LINE,
-            task_id=task_id,
-            store_version=sv,
-            data={
-                "status": "running",
-                "summary": "Harness started and bootstrap prompt sent",
-                "detail": f"session={session_id}",
-            },
-        ))
+        self.store.append_check_log(task_id, status="running", summary=summary, detail=f"session={session_id}")
+        self.bus.emit(Event(type=EventType.TASK_STARTED, task_id=task_id, store_version=sv,
+                            data={"session_id": session_id, "summary": summary}))
 
     def get_task(self, task_id: str) -> dict[str, Any] | None:
         return self.store.get_task(task_id)

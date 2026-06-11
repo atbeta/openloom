@@ -14,6 +14,7 @@ class TaskSpec:
     workspace: str
     goal: str
     steps: list[str] = field(default_factory=list)
+    step_acceptance: list[list[str]] = field(default_factory=list)
     acceptance: list[str] = field(default_factory=list)
     mode: str = "normal"
     agent: str = "opencode"
@@ -26,6 +27,7 @@ class TaskSpec:
             "workspace": self.workspace,
             "goal": self.goal,
             "steps": self.steps,
+            "step_acceptance": self.step_acceptance,
             "acceptance": self.acceptance,
             "mode": self.mode,
             "agent": self.agent,
@@ -35,20 +37,61 @@ class TaskSpec:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> TaskSpec:
-        steps = [str(s).strip() for s in (data.get("steps") or []) if str(s).strip()]
-        acceptance = [str(a).strip() for a in (data.get("acceptance") or []) if str(a).strip()]
+        steps, step_acceptance, global_acceptance = _parse_steps_and_acceptance(data)
         interval = _parse_interval_seconds(data)
         return cls(
             name=str(data.get("name") or "Untitled task").strip() or "Untitled task",
             workspace=str(data.get("workspace") or "").strip(),
             goal=str(data.get("goal") or "").strip(),
             steps=steps,
-            acceptance=acceptance,
+            step_acceptance=step_acceptance,
+            acceptance=global_acceptance,
             mode=str(data.get("mode") or "normal").strip() or "normal",
             agent=str(data.get("agent") or "opencode").strip() or "opencode",
             check_interval_seconds=interval,
             initial_prompt=(str(data["initial_prompt"]).strip() if data.get("initial_prompt") else None),
         )
+
+
+def _parse_steps_and_acceptance(data: dict[str, Any]) -> tuple[list[str], list[list[str]], list[str]]:
+    raw_steps = data.get("steps") or []
+    steps: list[str] = []
+    step_acceptance: list[list[str]] = []
+
+    if raw_steps and isinstance(raw_steps[0], dict):
+        for item in raw_steps:
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title") or item.get("name") or "").strip()
+            if not title:
+                continue
+            acc = [str(a).strip() for a in (item.get("acceptance") or []) if str(a).strip()]
+            steps.append(title)
+            step_acceptance.append(acc)
+    else:
+        steps = [str(s).strip() for s in raw_steps if str(s).strip()]
+        step_acceptance = [[] for _ in steps]
+
+    if data.get("step_acceptance") and isinstance(data["step_acceptance"], list):
+        parsed = []
+        for row in data["step_acceptance"]:
+            if isinstance(row, list):
+                parsed.append([str(a).strip() for a in row if str(a).strip()])
+            else:
+                parsed.append([])
+        if len(parsed) == len(steps):
+            step_acceptance = parsed
+
+    global_acceptance = [
+        str(a).strip()
+        for a in (data.get("global_acceptance") or data.get("acceptance") or [])
+        if str(a).strip()
+    ]
+    if not steps and global_acceptance and not step_acceptance:
+        step_acceptance = [[] for _ in steps]
+    while len(step_acceptance) < len(steps):
+        step_acceptance.append([])
+    return steps, step_acceptance[: len(steps)], global_acceptance
 
 
 def _interval_from_text(value: str, *, default_seconds: int = 300) -> int:
@@ -74,6 +117,43 @@ def _parse_interval_seconds(data: dict[str, Any]) -> int:
             return _interval_from_text(value)
         return max(60, int(value) * 60)
     return 300
+
+
+def _title_from_prompt(prompt: str, max_len: int = 60) -> str:
+    line = prompt.strip().splitlines()[0] if prompt.strip() else "Task"
+    if len(line) > max_len:
+        return line[: max_len - 1] + "…"
+    return line or "Task"
+
+
+def task_spec_from_prompt(
+    prompt: str,
+    workspace: str,
+    *,
+    check_interval_seconds: int | None = None,
+    watch: bool = False,
+    agent: str = "opencode",
+    mode: str = "normal",
+    name: str | None = None,
+) -> TaskSpec:
+    text = prompt.strip()
+    if not text:
+        raise ValueError("prompt is required")
+    if check_interval_seconds is None:
+        interval = 300 if watch else 0
+    else:
+        interval = max(0, int(check_interval_seconds))
+    return TaskSpec(
+        name=name or _title_from_prompt(text),
+        workspace=workspace.strip(),
+        goal=text,
+        steps=[],
+        acceptance=[],
+        mode=mode.strip() or "normal",
+        agent=agent.strip() or "opencode",
+        check_interval_seconds=interval,
+        initial_prompt=text,
+    )
 
 
 def parse_task_spec(text: str, fmt: str = "yaml") -> TaskSpec:
@@ -162,11 +242,20 @@ def _parse_markdown(text: str) -> TaskSpec:
 
 
 def build_bootstrap_prompt(spec: TaskSpec, *, current_step: int = 0) -> str:
-    if spec.initial_prompt:
+    if spec.initial_prompt and not spec.steps and not spec.acceptance and not spec.step_acceptance:
         return spec.initial_prompt
 
-    steps_block = "\n".join(f"{i + 1}. {step}" for i, step in enumerate(spec.steps)) or "1. Complete the goal"
-    acceptance_block = "\n".join(f"- [ ] {item}" for item in spec.acceptance) or "- [ ] Goal achieved"
+    step_blocks: list[str] = []
+    for index, step in enumerate(spec.steps):
+        accs = spec.step_acceptance[index] if index < len(spec.step_acceptance) else []
+        if accs:
+            acc_lines = "\n".join(f"   - [ ] {item}" for item in accs)
+        else:
+            acc_lines = "   - [ ] Step completed"
+        step_blocks.append(f"{index + 1}. {step}\n{acc_lines}")
+    steps_block = "\n\n".join(step_blocks) or "1. Complete the goal\n   - [ ] Step completed"
+    global_block = "\n".join(f"- [ ] {item}" for item in spec.acceptance)
+    global_section = f"\nFinal checks (whole task):\n{global_block}\n" if global_block else ""
     step_name = spec.steps[current_step] if 0 <= current_step < len(spec.steps) else "Finish remaining work"
 
     return f"""You are executing an OpenLoom harness task.
@@ -177,18 +266,15 @@ Workspace: {spec.workspace}
 Goal:
 {spec.goal or spec.name}
 
-Steps:
+Steps (each step has its own acceptance):
 {steps_block}
-
-Acceptance criteria:
-{acceptance_block}
-
+{global_section}
 Current focus: step {current_step + 1} — {step_name}
 
 Proceed through steps autonomously. Do not ask for confirmation between steps.
 
 When you complete a step, include a line: STEP DONE: <number>
-When all acceptance criteria are satisfied, include a line: TASK COMPLETE
+When all step and final checks pass, include a line: TASK COMPLETE
 """
 
 
@@ -204,9 +290,12 @@ def build_periodic_check_prompt(
         step_number = index + 1
         markers = completed_steps + ([progress["step_done"]] if progress["step_done"] else [])
         done = step_number in markers or progress["step_done"] >= step_number
-        step_lines.append(f"{step_number}. {step}{' (done)' if done else ''}")
-    steps_block = "\n".join(step_lines) or "1. Complete the goal"
-    acceptance_block = "\n".join(f"- [ ] {item}" for item in spec.acceptance) or "- [ ] Goal achieved"
+        accs = spec.step_acceptance[index] if index < len(spec.step_acceptance) else []
+        acc_hint = f" ({len(accs)} checks)" if accs else ""
+        step_lines.append(f"{step_number}. {step}{' (done)' if done else ''}{acc_hint}")
+    steps_block = "\n\n".join(step_lines) or "1. Complete the goal"
+    global_block = "\n".join(f"- [ ] {item}" for item in spec.acceptance)
+    global_section = f"\nFinal checks:\n{global_block}\n" if global_block else ""
     focus_index = min(current_step, len(spec.steps) - 1) if spec.steps else 0
     focus_step = spec.steps[focus_index] if spec.steps else "Finish remaining work"
 
@@ -216,13 +305,10 @@ The session is idle. Confirm task status before we schedule the next check.
 
 Steps:
 {steps_block}
-
-Acceptance:
-{acceptance_block}
-
+{global_section}
 Reply with ONE of:
 - STEP DONE: <number> — if a step is finished (required after each step)
-- TASK COMPLETE — if all acceptance criteria are satisfied
+- TASK COMPLETE — if all step and final checks pass
 - Or continue working on step {focus_index + 1}: {focus_step}
 
 Proceed autonomously. Do not ask for confirmation."""

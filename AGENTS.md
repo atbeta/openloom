@@ -2,22 +2,24 @@
 
 ## 项目说明
 
-**OpenLoom** 是一个面向 OpenCode 的渐进式无人值守任务 harness（观测面 + 完成判定），核心理念如下：
+**OpenLoom** 是 OpenCode 的**观测面 + 极简无人值守 harness**，不替代 OpenCode、不发明新编排概念。
 
-- **7 级渐进（L0-L7）**：每一级都是独立可用的真产品，用户主动升级、可随时停留。L0 = 零配置 CLI（200 行、字符串匹配判定），L2 = OpenSpec checkbox 判定，L3 = `--ui` Web 面板，L4 = 预归档校验（pytest/mypy/git diff 闸门），L6 = 团队 server 模式。
-- **核心价值主张**："Don't trust the agent's word, trust the file system"——误判率 35%（L0）→ 8%（L2）→ <1%（L4）。
-- **底座极小**：3 个 ABC（Source / Checker / Sink）+ 1 编排器（Harness）+ 1 事件总线，core 总计 ≤ 600 行，永不变；新能力 = 装饰器 + 显式注册表 + 冷检测，0 行改老代码。
+- **产品边界**：补 OpenCode HTTP API 缺的界面（session 监控、发 prompt、归档、diff）；**Task** 是唯一用户操作实体——发 prompt 与夜间巡检都是 Task，`watch=false` 一次性发送，`watch=true` 开启 harness 巡检。
+- **单一 Task 概念**：`POST /api/tasks` 接受 `{ intent, plan?, checkIntervalMinutes?, sessionId? }`（UI：Generate plan → 审阅 → Start）或 CLI 的 `{ format, spec }`。
+- **明确不做**：`ephemeral` / `bind` / `/api/dispatch` / Send|Watch 双入口 UI；一切 deck 37130ca 任务模型实验一律丢弃。DB 无历史兼容负担，schema 可直接改。
+- **7 级渐进（L0-L7）**：每一级独立可用、用户主动升级。L0 字符串判定 → L2 OpenSpec → L4 预归档校验 → L6 server 观测台。
+- **底座极小**：3 ABC + Harness + EventBus，core ≤ 600 行；新能力 = 装饰器 + 注册表 + 冷检测。
 
 ## 关键文档（改代码前必读）
 
 | 文档 | 内容 |
 |---|---|
-| `.ai/OPENLOOM_PLAN.md` | 里程碑 M0-M7 落地计划、opencode-deck 资产复用地图 |
+| `.ai/OPENLOOM_PLAN.md` | 里程碑、资产复用地图、**§15 UI 合并原则** |
 | `.ai/OPENLOOM_PACKAGING.md` | pip 包发布策略、目录规划、CI 矩阵 |
 
 ## 项目状态
 
-当前处于规划/骨架阶段。代码资产主要来自 opencode-deck 的迁移（`opencode_client.py` / `session_status.py` / `task_spec.py` 等约 1200 行可直接搬入 `runtime/`，详见 PLAN 第 1 节）。
+M0–M3 + M6 主线已落地（`openloom watch` / `openloom serve` + Svelte 观测台）。当前重点是 **Web UI 对齐 deck 必要能力**，且严格按 §15 原则——只搬 OpenCode API 的界面补全，不搬 deck 的任务模型实验。
 
 ## 目录约定（目标结构）
 

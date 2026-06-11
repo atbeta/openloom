@@ -119,12 +119,137 @@ def test_task_pause_resume_complete_archive(client: TestClient) -> None:
     assert client.post(f"/api/tasks/{tid}/archive").json()["status"] == "archived"
 
 
-def test_dispatch_rejects_empty_prompt(client: TestClient) -> None:
-    r = client.post("/api/dispatch", json={"prompt": ""})
-    assert r.status_code == 200
+def test_create_task_rejects_empty_prompt(client: TestClient) -> None:
+    r = client.post("/api/tasks", json={"prompt": "", "workspace": "/tmp/openloom-smoke"})
+    assert r.status_code == 400
+
+
+def test_create_task_prompt_one_shot(client: TestClient) -> None:
+    r = client.post("/api/tasks", json={
+        "prompt": "hello from task panel",
+        "workspace": "/tmp/openloom-smoke",
+        "watch": False,
+    })
+    assert r.status_code == 200, r.text
     body = r.json()
-    assert body["ok"] is False
-    assert "prompt" in body["error"]
+    assert body["ok"] is True
+    assert body["watch"] is False
+    assert "taskId" in body
+    task = client.get(f"/api/tasks/{body['taskId']}").json()["task"]
+    assert task["check_interval_seconds"] == 0
+
+
+def test_create_task_prompt_watch(client: TestClient) -> None:
+    r = client.post("/api/tasks", json={
+        "prompt": "keep working overnight",
+        "workspace": "/tmp/openloom-smoke",
+        "checkIntervalMinutes": 5,
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["watch"] is True
+    task = client.get(f"/api/tasks/{body['taskId']}").json()["task"]
+    assert task["check_interval_seconds"] == 300
+
+
+def test_create_task_with_plan(client: TestClient) -> None:
+    r = client.post("/api/tasks", json={
+        "workspace": "/tmp/openloom-smoke",
+        "checkIntervalMinutes": 5,
+        "plan": {
+            "name": "Fix SSE",
+            "goal": "Reconnect after drop",
+            "steps": [
+                {"title": "Inspect", "acceptance": ["Client inspected"]},
+                {"title": "Implement", "acceptance": ["Reconnect works"]},
+                {"title": "Test", "acceptance": ["Tests added"]},
+            ],
+            "global_acceptance": ["pytest passes"],
+        },
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["steps"] == 3
+    assert body["acceptance"] == 1
+    task = client.get(f"/api/tasks/{body['taskId']}").json()["task"]
+    assert task["spec"]["steps"] == ["Inspect", "Implement", "Test"]
+    assert task["spec"]["step_acceptance"] == [
+        ["Client inspected"],
+        ["Reconnect works"],
+        ["Tests added"],
+    ]
+    assert task["spec"]["acceptance"] == ["pytest passes"]
+
+
+def test_post_tasks_plan_not_method_not_allowed(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openloom.runtime import planner as planner_mod
+    from openloom.runtime.planner import PlanStep, TaskPlan
+
+    async def fake_generate_plan(client_obj, *, workspace: str, intent: str, agent=None):
+        return TaskPlan(
+            name="Planned task",
+            goal=f"Goal for {intent}",
+            steps=[PlanStep("Step one", ["done"])],
+            global_acceptance=[],
+            intent=intent,
+        )
+
+    monkeypatch.setattr(planner_mod, "generate_plan", fake_generate_plan)
+    r = client.post("/api/tasks/plan", json={
+        "intent": "build feature x",
+        "workspace": "/tmp/openloom-smoke",
+    })
+    assert r.status_code == 200, r.text
+    assert r.status_code != 405
+
+
+def test_generate_task_plan(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openloom.runtime import planner as planner_mod
+    from openloom.runtime.planner import PlanStep, TaskPlan
+
+    async def fake_generate_plan(client_obj, *, workspace: str, intent: str, agent=None):
+        return TaskPlan(
+            name="Planned task",
+            goal=f"Goal for {intent}",
+            steps=[
+                PlanStep("Step one", ["Criterion one"]),
+                PlanStep("Step two", ["Criterion two"]),
+            ],
+            global_acceptance=["Criterion A"],
+            intent=intent,
+        )
+
+    monkeypatch.setattr(planner_mod, "generate_plan", fake_generate_plan)
+    r = client.post("/api/tasks/plan", json={
+        "intent": "build feature x",
+        "workspace": "/tmp/openloom-smoke",
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True
+    assert body["plan"]["steps"][0]["title"] == "Step one"
+    assert body["plan"]["steps"][0]["acceptance"] == ["Criterion one"]
+    assert body["plan"]["global_acceptance"] == ["Criterion A"]
+    assert body["plan"]["name"] == "Planned task"
+
+
+def test_create_task_with_session_id(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from openloom.runtime.opencode import OpenCodeClient
+
+    async def fake_list_sessions(self: OpenCodeClient) -> list[dict[str, str]]:
+        return [{"id": "sess_existing", "directory": "/tmp/openloom-smoke", "title": "Existing"}]
+
+    monkeypatch.setattr(OpenCodeClient, "list_sessions", fake_list_sessions)
+    r = client.post("/api/tasks", json={
+        "format": "yaml",
+        "spec": "name: watch\nworkspace: /tmp/openloom-smoke\ngoal: keep going\nsteps:\n  - one\n",
+        "sessionId": "sess_existing",
+    })
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["sessionId"] == "sess_existing"
+    task = client.get(f"/api/tasks/{body['taskId']}").json()["task"]
+    assert task["active_session_id"] == "sess_existing"
 
 
 def test_browse_directory(client: TestClient) -> None:

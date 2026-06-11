@@ -75,7 +75,8 @@ class Store:
                 (task["id"], task.get("name", ""), json.dumps(task.get("spec", {}), ensure_ascii=False),
                  task.get("workspace", ""), task.get("status", "pending"),
                  int(task.get("current_step") or 0), json.dumps(task.get("session_ids") or [], ensure_ascii=False),
-                 task.get("active_session_id"), int(task.get("check_interval_seconds") or 300),
+                 task.get("active_session_id"),
+                 int(task["check_interval_seconds"]) if "check_interval_seconds" in task else 300,
                  json.dumps(task.get("completed_steps") or [], ensure_ascii=False),
                  int(task.get("idle_checks") or 0), float(task.get("progress") or 0),
                  json.dumps(task.get("check_log") or [], ensure_ascii=False),
@@ -119,6 +120,7 @@ class Store:
             rows = conn.execute(
                 "SELECT * FROM tasks WHERE status IN ('pending', 'running', 'waiting')"
                 " AND (next_check_at IS NULL OR next_check_at <= ?)"
+                " AND (status = 'pending' OR check_interval_seconds > 0)"
                 " ORDER BY COALESCE(next_check_at, 0) ASC LIMIT ?",
                 (now, limit),
             ).fetchall()

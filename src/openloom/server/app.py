@@ -53,42 +53,169 @@ def create_app(
     async def list_tasks():
         return task_routes.tasks_list(store)
 
-    @app.get("/api/tasks/{task_id}")
-    async def get_task(task_id: str):
-        return task_routes.task_detail(store, task_id)
+    @app.post("/api/tasks/plan")
+    async def generate_task_plan(req: Request):
+        if client is None or settings is None:
+            raise HTTPException(status_code=503, detail="Plan generation requires OpenCode client")
+        body = await req.json()
+        intent = str(body.get("intent") or body.get("prompt") or "").strip()
+        if not intent:
+            raise HTTPException(status_code=400, detail="intent is required")
+        session_id = body.get("sessionId")
+        from pathlib import Path as _P
+        from openloom.runtime.planner import generate_plan
+
+        cwd: str
+        if session_id:
+            try:
+                sessions = await client.list_sessions()
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(status_code=502, detail=f"opencode: {exc}") from exc
+            match = next((s for s in sessions if s.get("id") == session_id), None)
+            if not match:
+                raise HTTPException(status_code=404, detail="Session not found")
+            directory = match.get("directory") or str(body.get("workspace") or "")
+            if not directory:
+                raise HTTPException(status_code=400, detail="Cannot resolve workspace for session")
+            cwd = str(_P(directory).expanduser().resolve())
+        else:
+            workspace = str(body.get("workspace") or "").strip()
+            if not workspace:
+                raise HTTPException(status_code=400, detail="workspace is required")
+            cwd = str(_P(workspace).expanduser().resolve())
+
+        if not settings.is_allowed_workspace(cwd):
+            raise HTTPException(status_code=400, detail="Workspace not allowed")
+
+        agent = str(body.get("agent") or "opencode")
+        agent_name = None if agent == "opencode" else agent
+        try:
+            plan = await generate_plan(client, workspace=cwd, intent=intent, agent=agent_name)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001
+            raise HTTPException(status_code=502, detail=f"plan generation failed: {exc}") from exc
+        return {"ok": True, "plan": plan.to_dict(), "workspace": cwd}
 
     @app.post("/api/tasks")
     async def create_task(req: Request):
-        if parse_spec is None or settings is None:
-            raise HTTPException(status_code=501, detail="Task creation needs a parse_spec binding")
+        if settings is None:
+            raise HTTPException(status_code=501, detail="Task creation needs settings binding")
         body = await req.json()
-        spec_format = body.get("format", "yaml")
-        spec_text = body.get("spec", "")
-        if not spec_text:
-            raise HTTPException(status_code=400, detail="spec is required")
-        try:
-            spec = parse_spec(spec_text, spec_format)
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=400, detail=f"Invalid task spec: {exc}") from exc
-        if not spec.workspace:
-            raise HTTPException(status_code=400, detail="Task spec must include workspace")
+        session_id = body.get("sessionId")
+
+        plan_data = body.get("plan")
+        prompt_text = body.get("prompt")
+        intent_text = body.get("intent")
+        spec_text = body.get("spec")
+        interval: int | None = None
+        if "checkIntervalMinutes" in body:
+            minutes = int(body["checkIntervalMinutes"])
+            interval = 0 if minutes <= 0 else max(60, minutes * 60)
+        elif body.get("checkIntervalSeconds") is not None:
+            interval = max(0, int(body["checkIntervalSeconds"]))
+
+        agent = str(body.get("agent") or "opencode")
+        mode = str(body.get("mode") or "normal")
+
+        if isinstance(plan_data, dict):
+            from openloom.runtime.planner import TaskPlan, task_spec_from_plan
+
+            intent = str(intent_text or prompt_text or plan_data.get("intent") or "").strip()
+            try:
+                plan = TaskPlan.from_dict({**plan_data, "intent": plan_data.get("intent") or intent})
+                spec = task_spec_from_plan(
+                    plan,
+                    str(body.get("workspace") or ""),
+                    check_interval_seconds=interval,
+                    agent=agent,
+                    mode=mode,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+        elif prompt_text is not None:
+            from openloom.runtime.prompts import task_spec_from_prompt
+
+            prompt = str(prompt_text).strip()
+            if not prompt:
+                raise HTTPException(status_code=400, detail="prompt is required")
+            try:
+                spec = task_spec_from_prompt(
+                    prompt,
+                    str(body.get("workspace") or ""),
+                    check_interval_seconds=interval,
+                    watch=bool(body.get("watch")),
+                    agent=agent,
+                    mode=mode,
+                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+        elif spec_text:
+            if parse_spec is None:
+                raise HTTPException(status_code=501, detail="YAML spec needs parse_spec binding")
+            try:
+                spec = parse_spec(str(spec_text), body.get("format", "yaml"))
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(status_code=400, detail=f"Invalid task spec: {exc}") from exc
+        else:
+            raise HTTPException(status_code=400, detail="plan, prompt, or spec is required")
+
         from pathlib import Path as _P
-        cwd = str(_P(spec.workspace).expanduser().resolve())
+
+        cwd: str | None = None
+        if session_id:
+            if client is None:
+                raise HTTPException(status_code=503, detail="OpenCode client unavailable")
+            try:
+                sessions = await client.list_sessions()
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(status_code=502, detail=f"opencode: {exc}") from exc
+            match = next((s for s in sessions if s.get("id") == session_id), None)
+            if not match:
+                raise HTTPException(status_code=404, detail="Session not found")
+            directory = match.get("directory") or spec.workspace
+            if not directory:
+                raise HTTPException(status_code=400, detail="Cannot resolve workspace for session")
+            cwd = str(_P(directory).expanduser().resolve())
+        else:
+            if not spec.workspace:
+                raise HTTPException(status_code=400, detail="workspace is required")
+            cwd = str(_P(spec.workspace).expanduser().resolve())
+
         if not settings.is_allowed_workspace(cwd):
             raise HTTPException(status_code=400, detail="Workspace not allowed")
         spec.workspace = cwd
+
         task_id = f"task_{uuid.uuid4().hex[:12]}"
         now = time.time()
         task = {
-            "id": task_id, "name": spec.name, "spec": spec.to_dict(),
-            "workspace": cwd, "status": "pending",
+            "id": task_id,
+            "name": spec.name,
+            "spec": spec.to_dict(),
+            "workspace": cwd,
+            "status": "pending",
             "check_interval_seconds": spec.check_interval_seconds,
             "next_check_at": now,
+            "active_session_id": session_id,
+            "session_ids": [session_id] if session_id else [],
         }
         store.create_task(task)
-        if recent is not None:
+        if recent is not None and not session_id:
             recent.record(cwd)
-        return {"ok": True, "taskId": task_id, "status": "pending", "name": spec.name}
+        return {
+            "ok": True,
+            "taskId": task_id,
+            "status": "pending",
+            "name": spec.name,
+            "watch": spec.check_interval_seconds > 0,
+            "sessionId": session_id,
+            "steps": len(spec.steps),
+            "acceptance": len(spec.acceptance),
+        }
+
+    @app.get("/api/tasks/{task_id}")
+    async def get_task(task_id: str):
+        return task_routes.task_detail(store, task_id)
 
     @app.post("/api/tasks/{task_id}/pause")
     async def pause(task_id: str):
@@ -194,11 +321,6 @@ def create_app(
         @app.get("/api/sessions/{session_id}/diff")
         async def get_diff(session_id: str):
             return await session_routes.session_diff(client, session_id)
-
-        @app.post("/api/dispatch")
-        async def dispatch(req: Request):
-            body = await req.json()
-            return await session_routes.dispatch_prompt(client, body, recent=recent, settings=settings)
 
         @app.post("/api/sessions/{session_id}/archive")
         async def archive_session(session_id: str):
