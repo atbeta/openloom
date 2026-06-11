@@ -1,61 +1,30 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 from pathlib import Path
 from typing import Any
 
-from openloom.core.events import Event, EventBus, EventType
+from openloom.core.events import EventBus
 from openloom.core.harness import HarnessRunner
+from openloom.core.registry import get_checker, get_sink, get_source
 from openloom.core.store import Store
-from openloom.levels.manual.checker import StringChecker
 from openloom.runtime import prompts, session_status
 from openloom.runtime.opencode import OpenCodeClient
-from openloom.runtime.prompts import load_task_spec, parse_task_spec
 
-
-class ConsoleSink:
-    def __init__(self) -> None:
-        self._task_names: dict[str, str] = {}
-
-    def handle(self, event: Event) -> None:
-        if event.type == EventType.TASK_CREATED:
-            name = event.data.get("spec", {}).get("name", event.task_id)
-            self._task_names[event.task_id] = name
-            print(f"[{event.task_id[:12]}] CREATED  {name}")
-
-        elif event.type == EventType.TASK_STARTED:
-            name = self._task_names.get(event.task_id, event.task_id[:12])
-            sid = event.data.get("session_id", "")[:12]
-            print(f"[{event.task_id[:12]}] STARTED  {name}  session={sid}")
-
-        elif event.type == EventType.TASK_UPDATED:
-            name = self._task_names.get(event.task_id, event.task_id[:12])
-            summary = event.data.get("summary", "")
-            progress = event.data.get("progress", 0)
-            print(f"[{event.task_id[:12]}] {event.data.get('status', '?')}  {name}  p={progress:.0%}  {summary}")
-
-        elif event.type == EventType.TASK_COMPLETED:
-            name = self._task_names.get(event.task_id, event.task_id[:12])
-            print(f"[{event.task_id[:12]}] COMPLETE  {name}  {event.data.get('summary', '')}")
-
-        elif event.type == EventType.TASK_FAILED:
-            name = self._task_names.get(event.task_id, event.task_id[:12])
-            error = event.data.get("error", event.data.get("summary", ""))
-            print(f"[{event.task_id[:12]}] FAILED   {name}  {error}")
-
-        elif event.type == EventType.LOG_LINE:
-            print(f"[{event.task_id[:12]}] LOG      {event.data.get('summary', '')}")
-
-        sys.stdout.flush()
+# Import to trigger registry decorators
+import openloom.levels.manual.checker  # noqa: F401
+import openloom.levels.manual.sink  # noqa: F401
+import openloom.levels.manual.source  # noqa: F401
 
 
 async def run_watch(spec_path: str | None, settings: Any, store_path: str | None = None) -> None:
-    if spec_path:
-        with open(spec_path) as f:
-            spec = parse_task_spec(f.read())
-    else:
-        spec = load_task_spec()
+    source_cls = get_source("manual")
+    source = source_cls()
+    specs = source.load(spec_path=spec_path)
+
+    if not specs:
+        print("ERROR: No tasks loaded from source")
+        return
 
     client = OpenCodeClient(settings.opencode_url, settings.opencode_username, settings.opencode_password)
 
@@ -64,14 +33,17 @@ async def run_watch(spec_path: str | None, settings: Any, store_path: str | None
         print(f"ERROR: OpenCode server not reachable: {health.message}")
         return
 
-    db_path = Path(store_path) if store_path else Path.cwd() / ".openloom" / "openloom.sqlite3"
+    db_path = Path(store_path) if store_path else settings.database_path
     store = Store(db_path)
 
     bus = EventBus()
-    sink = ConsoleSink()
-    bus.subscribe_all(sink.handle)
 
-    checker = StringChecker()
+    sink_cls = get_sink("console")
+    sink = sink_cls()
+    bus.subscribe_all(sink.on_event)
+
+    checker_cls = get_checker("string")
+    checker = checker_cls()
 
     harness = HarnessRunner(
         opencode=client,
@@ -83,11 +55,15 @@ async def run_watch(spec_path: str | None, settings: Any, store_path: str | None
         allowed_workspace=settings.is_allowed_workspace,
     )
 
-    task_id = harness.add_task(spec)
-    print(f"openloom: watching {task_id[:12]} — {spec.name}")
-    print(f"  workspace: {spec.workspace}")
-    print(f"  interval:  {spec.check_interval_seconds}s")
+    first_spec = specs[0]
+    spec_name = first_spec.get("name", "Untitled")
+    task_id = harness.add_task(first_spec)
+
+    print(f"openloom: watching {task_id[:12]} — {spec_name}")
+    print(f"  workspace: {first_spec.get('workspace', '?')}")
+    print(f"  interval:  {first_spec.get('check_interval_seconds', 300)}s")
     print(f"  store:     {db_path}")
+    print(f"  source:    manual  checker: string  sink: console")
     print()
 
     try:

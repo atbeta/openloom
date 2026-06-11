@@ -2,10 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
+from openloom.core.registry import register_checker
 from openloom.core.checker import CheckResult, Checker
 from openloom.runtime.prompts import TaskSpec, assistant_transcript, detect_progress
 
 
+@register_checker("string")
 class StringChecker(Checker):
     def check(self, messages: list[dict[str, Any]], spec: dict[str, Any]) -> CheckResult:
         text = assistant_transcript(messages)
