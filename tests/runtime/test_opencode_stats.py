@@ -28,7 +28,7 @@ def test_aggregate_sums_tokens_and_cost() -> None:
             "info": {
                 "role": "assistant",
                 "tokens": {
-                    "total": 30831, "input": 30657, "output": 129,
+                    "input": 30657, "output": 129,
                     "reasoning": 45,
                     "cache": {"read": 0, "write": 0},
                 },
@@ -39,7 +39,7 @@ def test_aggregate_sums_tokens_and_cost() -> None:
             "info": {
                 "role": "assistant",
                 "tokens": {
-                    "total": 36638, "input": 5435, "output": 162,
+                    "input": 5435, "output": 162,
                     "reasoning": 321,
                     "cache": {"read": 30720, "write": 0},
                 },
@@ -51,19 +51,21 @@ def test_aggregate_sums_tokens_and_cost() -> None:
     ]
     out = _aggregate_message_stats(msgs)
     assert out["cost"] == pytest.approx(0.06)
+    # Match the 1.16.x session-level payload shape: no ``total`` key,
+    # ``cache`` is a nested dict.
     assert out["tokens"] == {
-        "total": 67469,
         "input": 36092,
         "output": 291,
         "reasoning": 366,
         "cache": {"read": 30720, "write": 0},
     }
+    assert "total" not in out["tokens"]
 
 
 def test_aggregate_handles_partial_payloads() -> None:
     """A message missing cost (or tokens) should not zero the others."""
     msgs = [
-        {"info": {"tokens": {"input": 100, "output": 50, "reasoning": 0, "total": 150}}},
+        {"info": {"tokens": {"input": 100, "output": 50, "reasoning": 0}}},
         {"info": {"cost": 0.42}},
     ]
     out = _aggregate_message_stats(msgs)
@@ -76,7 +78,7 @@ def test_aggregate_ignores_non_numeric_values() -> None:
     """Defensive: bad payload should not crash the dashboard."""
     msgs = [
         {"info": {"tokens": "huge", "cost": "expensive"}},
-        {"info": {"tokens": {"input": None, "output": 5, "reasoning": 0, "total": 5}}},
+        {"info": {"tokens": {"input": None, "output": 5, "reasoning": 0}}},
     ]
     out = _aggregate_message_stats(msgs)
     assert out["tokens"]["input"] == 0  # None skipped

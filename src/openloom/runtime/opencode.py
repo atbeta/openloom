@@ -13,19 +13,25 @@ from .session_status import BUSY, RETRY, extract_status_type
 
 
 PROJECT_CACHE_TTL_SECONDS = 10.0
+MAX_MESSAGES_PER_SESSION = 1000  # backfill ceiling for very long sessions
 
 
 def _aggregate_message_stats(messages: list[dict[str, Any]]) -> dict[str, Any]:
     """Sum tokens / cost across all messages in a session.
 
     Tokens live at info.tokens on each message; cost at info.cost.
-    OpenCode has been emitting these since 1.14.x. We sum totals
-    (input / output / reasoning / cache.read / cache.write) and add
-    the cost values. Returns ``{"tokens": {...}, "cost": float}``;
-    either may be ``None`` if the input had nothing to aggregate.
+    OpenCode has been emitting these since 1.14.x. We sum the same
+    fields that 1.16.x's session-level payload carries —
+    ``input / output / reasoning / cache.{read,write}`` — and add
+    the cost values. We deliberately omit a ``total`` key to match
+    the 1.16.x native shape; the dashboard's telemetry layer sums
+    the components itself.
+
+    Returns ``{"tokens": {...}, "cost": float}``; either may be
+    ``None`` if the input had nothing to aggregate.
     """
-    total_tokens: dict[str, float] = {
-        "total": 0, "input": 0, "output": 0, "reasoning": 0,
+    totals: dict[str, float] = {
+        "input": 0, "output": 0, "reasoning": 0,
         "cache.read": 0, "cache.write": 0,
     }
     cost = 0.0
@@ -37,16 +43,16 @@ def _aggregate_message_stats(messages: list[dict[str, Any]]) -> dict[str, Any]:
             continue
         tokens = info.get("tokens")
         if isinstance(tokens, dict):
-            for key in ("total", "input", "output", "reasoning"):
+            for key in ("input", "output", "reasoning"):
                 value = tokens.get(key)
                 if isinstance(value, (int, float)):
-                    total_tokens[key] += value
+                    totals[key] += value
             cache = tokens.get("cache")
             if isinstance(cache, dict):
                 for sub in ("read", "write"):
                     value = cache.get(sub)
                     if isinstance(value, (int, float)):
-                        total_tokens[f"cache.{sub}"] += value
+                        totals[f"cache.{sub}"] += value
             saw_any = True
         cost_value = info.get("cost")
         if isinstance(cost_value, (int, float)):
@@ -57,13 +63,12 @@ def _aggregate_message_stats(messages: list[dict[str, Any]]) -> dict[str, Any]:
         return {"tokens": None, "cost": None}
     return {
         "tokens": {
-            "total": total_tokens["total"],
-            "input": total_tokens["input"],
-            "output": total_tokens["output"],
-            "reasoning": total_tokens["reasoning"],
+            "input": totals["input"],
+            "output": totals["output"],
+            "reasoning": totals["reasoning"],
             "cache": {
-                "read": total_tokens["cache.read"],
-                "write": total_tokens["cache.write"],
+                "read": totals["cache.read"],
+                "write": totals["cache.write"],
             },
         },
         "cost": cost,
@@ -132,6 +137,12 @@ class OpenCodeClient:
         self._project_cache: list[dict[str, Any]] | None = None
         self._project_cache_at: float = 0.0
         self._project_lock = asyncio.Lock()
+        # Session-stats backfill cache, keyed by session_id. The ``updated``
+        # field doubles as a content-addressable signature: when the
+        # session advances in OpenCode, ``updated`` moves and we know to
+        # refetch. Keeps the dashboard from refetching 100 messages for
+        # every visible session on every 5-15s poll.
+        self._stats_cache: dict[str, tuple[int, dict[str, Any]]] = {}
 
     async def health(self) -> OpenCodeHealth:
         try:
@@ -193,16 +204,30 @@ class OpenCodeClient:
         """Backfill tokens / cost from per-message payload for older
         OpenCode (1.14.x) servers that omit those fields in the session
         list response. Runs in parallel; only touches sessions that
-        already lack the fields.
+        already lack the fields. Results are cached in
+        ``self._stats_cache`` keyed by session_id and invalidated when
+        the session's ``updated`` timestamp advances, so the 5-15s
+        dashboard poll does not refetch messages for unchanged sessions.
         """
-        targets = [s for s in sessions if s.get("id") and not s.get("tokens")]
+        targets = [
+            s for s in sessions
+            if s.get("id") and not s.get("tokens")
+        ]
 
         async def fill(session: dict[str, Any]) -> None:
-            try:
-                messages = await self.messages(session["id"], limit=100)
-            except Exception:
-                return
-            agg = _aggregate_message_stats(messages)
+            sid = session["id"]
+            updated = session.get("updated") or 0
+            # updated is in seconds on the wire; cache key uses the same
+            # value so a moving session always re-fetches.
+            signature = int(updated) if isinstance(updated, (int, float)) else 0
+            cached = self._stats_cache.get(sid)
+            if cached is not None and cached[0] == signature:
+                agg = cached[1]
+            else:
+                messages = await self._fetch_all_messages(sid)
+                agg = _aggregate_message_stats(messages)
+                if agg["tokens"] or agg["cost"] is not None:
+                    self._stats_cache[sid] = (signature, agg)
             if agg["tokens"]:
                 session["tokens"] = agg["tokens"]
             if agg["cost"] is not None:
@@ -350,6 +375,45 @@ class OpenCodeClient:
             if isinstance(messages, list):
                 return [item for item in messages if isinstance(item, dict)]
         return []
+
+    async def _fetch_all_messages(self, session_id: str) -> list[dict[str, Any]]:
+        """Walk the entire message feed, paginated, up to
+        MAX_MESSAGES_PER_SESSION. Used by the stats backfill — the
+        single ``limit=N`` call is a footgun for long sessions
+        (truncates token totals).
+        """
+        page_size = 100
+        out: list[dict[str, Any]] = []
+        cursor: int | None = 0
+        while len(out) < MAX_MESSAGES_PER_SESSION:
+            params: dict[str, str] = {"limit": str(page_size)}
+            if cursor is not None:
+                params["cursor"] = str(cursor)
+            try:
+                data = await self._request_json(
+                    "GET", f"/session/{session_id}/message", params=params,
+                )
+            except Exception:
+                return out
+            if isinstance(data, list):
+                page = [m for m in data if isinstance(m, dict)]
+                out.extend(page)
+                break  # list response: server returned everything
+            if isinstance(data, dict):
+                page = data.get("messages") or data.get("data") or []
+                if not isinstance(page, list):
+                    return out
+                page = [m for m in page if isinstance(m, dict)]
+                out.extend(page)
+                # Some servers return ``next_cursor`` / ``has_more``.
+                has_more = data.get("has_more") or data.get("hasMore")
+                next_cursor = data.get("next_cursor") or data.get("nextCursor")
+                if has_more and next_cursor is not None:
+                    cursor = int(next_cursor)
+                    continue
+                break
+            return out
+        return out[:MAX_MESSAGES_PER_SESSION]
 
     async def diff(self, session_id: str) -> list[dict[str, Any]]:
         data = await self._request_json("GET", f"/session/{session_id}/diff")
