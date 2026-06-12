@@ -28,7 +28,8 @@
   {:else if name === 'corner-up-left'}
     <path d="M6 3.5H3.5V6M3.5 3.5 9 9" />
   {:else if name === 'refresh'}
-    <path d="M11.5 2.5v3h-3M4.5 13.5v-3h3M12.5 6a5 5 0 0 0-8.5-1.5M3.5 10a5 5 0 0 0 8.5 1.5" />
+    <path d="M12.5 4.5A5.5 5.5 0 1 0 7 13" />
+    <path d="M12.5 2.5v2h-2" />
   {:else if name === 'x'}
     <path d="M4.5 4.5 11.5 11.5M11.5 4.5 4.5 11.5" />
   {:else if name === 'check'}

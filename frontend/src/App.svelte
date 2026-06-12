@@ -82,10 +82,12 @@
   let drawerSessionId = $state('');
   let drawerTab = $state('messages');
   let drawerLoading = $state(false);
+  let drawerRefreshing = $state(false);
   let drawerError = $state('');
   let drawerMessages = $state([]);
   let drawerDiff = $state([]);
   let drawerLoadedAt = $state(0);
+  let drawerMsgExpanded = $state(new Set());
 
   let drawerTaskId = $state('');
   let drawerTaskTab = $state('overview');
@@ -372,6 +374,7 @@
     drawerError = '';
     drawerMessages = [];
     drawerDiff = [];
+    drawerMsgExpanded = new Set();
     drawerLoading = true;
     await loadDrawerData(sessionId);
   }
@@ -396,8 +399,16 @@
   }
 
   async function refreshDrawer() {
-    if (!drawerSessionId) return;
-    await loadDrawerData(drawerSessionId);
+    if (!drawerSessionId || drawerRefreshing) return;
+    drawerRefreshing = true;
+    const started = Date.now();
+    try {
+      await loadDrawerData(drawerSessionId);
+    } finally {
+      const wait = Math.max(0, 650 - (Date.now() - started));
+      if (wait) await new Promise((resolve) => setTimeout(resolve, wait));
+      drawerRefreshing = false;
+    }
   }
 
   function closeDrawer() {
@@ -475,72 +486,160 @@
     return [];
   }
 
-  function renderPart(part) {
+  const MSG_COLLAPSE_LINES = 12;
+
+  function messageLineCount(text) {
+    return String(text || '').split('\n').length;
+  }
+
+  function isLogLike(text) {
+    const lines = String(text || '')
+      .split('\n')
+      .map((line) => line.trim())
+      .filter(Boolean);
+    if (lines.length >= 10) return true;
+    if (lines.length < 3) return false;
+    const patterns = [
+      /^\d{4}[-/]\d{2}/,
+      /^\[/,
+      /^time=/,
+      /^level=\w+/i,
+      /^(GET|POST|PUT|PATCH|DELETE|HEAD)\s/,
+      /\|\s*(GET|POST)\s/,
+      /oauth:/i,
+      /status=\d{3}/,
+      /msg="/,
+      /invalid signature/i,
+    ];
+    let hits = 0;
+    for (const line of lines.slice(0, 15)) {
+      if (patterns.some((pattern) => pattern.test(line))) hits += 1;
+    }
+    return hits >= 2;
+  }
+
+  function shouldCollapseText(text) {
+    return messageLineCount(text) > MSG_COLLAPSE_LINES || isLogLike(text);
+  }
+
+  function partToBlock(part) {
     if (part == null) return null;
     if (typeof part === 'string') {
-      const t = part.trim();
-      return t ? t : null;
+      const text = part.trim();
+      if (!text) return null;
+      return { type: 'text', text, collapsed: shouldCollapseText(text), lines: messageLineCount(text) };
     }
-    if (typeof part !== 'object') return String(part);
+    if (typeof part !== 'object') return null;
+
     const type = String(part.type || '').toLowerCase();
     if (type === 'text' || type === '') {
-      const t = part.text || part.content;
-      if (typeof t === 'string' && t.trim()) return t.trim();
-      return null;
+      const text = String(part.text || part.content || '').trim();
+      if (!text) return null;
+      return { type: 'text', text, collapsed: shouldCollapseText(text), lines: messageLineCount(text) };
     }
     if (type === 'reasoning') {
-      const t = part.text || part.content || '';
-      const cleaned = typeof t === 'string' ? t.trim() : '';
-      return cleaned ? `💭 ${cleaned.slice(0, 200)}` : null;
+      const text = String(part.text || part.content || '').trim();
+      if (!text) return null;
+      return { type: 'reasoning', text, collapsed: true, lines: messageLineCount(text) };
     }
     if (type === 'tool' || type === 'tool_use' || type === 'tool-invocation') {
       const name = part.name || part.tool || 'tool';
+      let summary = name;
       const args = part.input || part.args || part.arguments;
       if (args && typeof args === 'object') {
         for (const key of ['command', 'filePath', 'path', 'file', 'url', 'query', 'prompt']) {
-          const v = args[key];
-          if (typeof v === 'string' && v.trim()) return `🔧 ${name} — ${v.slice(0, 120)}`;
+          const value = args[key];
+          if (typeof value === 'string' && value.trim()) {
+            summary = `${name} · ${value.trim().slice(0, 160)}`;
+            break;
+          }
         }
       }
-      return `🔧 ${name}`;
+      const detail = args ? JSON.stringify(args, null, 2) : '';
+      return { type: 'tool', name, summary, detail, collapsed: true };
     }
     if (type === 'tool_result' || type === 'tool-result') {
       const name = part.name || part.tool || 'tool';
       const output = part.output ?? part.content;
-      if (typeof output === 'string') {
-        const firstLine = output.split('\n').map((line) => line.trim()).find(Boolean);
-        return `↪ ${name}${firstLine ? `: ${firstLine.slice(0, 140)}` : ''}`;
+      const text =
+        typeof output === 'string'
+          ? output.trim()
+          : output
+            ? JSON.stringify(output, null, 2)
+            : '';
+      if (!text) {
+        return { type: 'tool-result', name, summary: `${name} · (no output)`, text: '', collapsed: true, lines: 0 };
       }
-      return `↪ ${name}`;
+      const firstLine = text.split('\n').map((line) => line.trim()).find(Boolean) || '';
+      const summary = firstLine ? `${name} · ${firstLine.slice(0, 120)}` : name;
+      return {
+        type: 'tool-result',
+        name,
+        summary,
+        text,
+        collapsed: shouldCollapseText(text) || text.length > 240,
+        lines: messageLineCount(text),
+      };
     }
     if (type === 'step-start' || type === 'step-finish') return null;
-    const keys = Object.keys(part).filter((k) => k !== 'type');
-    if (keys.length === 0) return null;
-    return `· ${type || 'part'} (${keys.slice(0, 3).join(', ')})`;
+    return null;
+  }
+
+  function buildMessageBlocks(message) {
+    if (!message) return [];
+    if (typeof message.text === 'string' && message.text.trim()) {
+      const text = message.text.trim();
+      return [{ type: 'text', text, collapsed: shouldCollapseText(text), lines: messageLineCount(text) }];
+    }
+    const parts = getMessageParts(message);
+    if (parts.length > 0) {
+      return parts.map(partToBlock).filter(Boolean);
+    }
+    const info = getMessageInfo(message);
+    if (info) {
+      const summary = pickFirst(info, ['summary', 'text', 'content']);
+      if (summary) {
+        const text = String(summary).trim();
+        return [{ type: 'text', text, collapsed: shouldCollapseText(text), lines: messageLineCount(text) }];
+      }
+    }
+    return [];
+  }
+
+  function foldLabel(block) {
+    if (block.type === 'reasoning') return `Thinking · ${block.lines} lines`;
+    if (block.type === 'tool' || block.type === 'tool-result') {
+      if (block.lines > 0) return `${block.summary} · ${block.lines} lines`;
+      return block.summary;
+    }
+    if (isLogLike(block.text)) return `Log · ${block.lines} lines`;
+    return `Text · ${block.lines} lines`;
+  }
+
+  function messageEntryId(message, index) {
+    const info = getMessageInfo(message);
+    return info?.id || info?.messageID || `msg-${index}`;
+  }
+
+  function blockExpandKey(entryId, blockIndex) {
+    return `${entryId}:${blockIndex}`;
+  }
+
+  function isBlockExpanded(key) {
+    return drawerMsgExpanded.has(key);
+  }
+
+  function toggleMsgBlock(key) {
+    const next = new Set(drawerMsgExpanded);
+    if (next.has(key)) next.delete(key);
+    else next.add(key);
+    drawerMsgExpanded = next;
   }
 
   function messageRole(message) {
     const info = message?.info;
     if (info && typeof info === 'object' && info.role) return String(info.role).toLowerCase();
     return (message?.role || message?.type || 'message').toLowerCase();
-  }
-
-  function summarizeMessage(message) {
-    if (!message) return ['(empty)'];
-    if (typeof message.text === 'string' && message.text.trim()) return [message.text.trim()];
-    const parts = getMessageParts(message);
-    if (Array.isArray(parts) && parts.length > 0) {
-      const lines = parts.map(renderPart).filter(Boolean);
-      if (lines.length === 0) return ['(no displayable content)'];
-      if (lines.length > 5) return [...lines.slice(0, 5), `(+${lines.length - 5} more parts)`];
-      return lines;
-    }
-    const info = getMessageInfo(message);
-    if (info) {
-      const summary = pickFirst(info, ['summary', 'text', 'content']);
-      if (summary) return [String(summary).slice(0, 240)];
-    }
-    return ['(empty)'];
   }
 
   function messageTimestamp(message) {
@@ -1770,27 +1869,32 @@
 {#if drawerSession}
   <div class="drawer-mask" onclick={closeDrawer} role="presentation"></div>
   <aside class="drawer" role="dialog" aria-label="Session detail">
-    <header class="drawer-head">
-      <div class="drawer-head-main">
-        <div class="drawer-eyebrow">Session</div>
-        <h3>{drawerSession.title}</h3>
-        <div class="mono drawer-dir">{shortPath(drawerSession.directory) || '(unknown directory)'}</div>
-        <div class="drawer-status-row">
+    <header class="drawer-head drawer-head-compact drawer-head-stacked">
+      <div class="drawer-head-top">
+        <h3 class="drawer-head-title" title={drawerSession.title}>{drawerSession.title}</h3>
+        <div class="drawer-head-actions drawer-head-toolbar">
           <span class={`pill ${statusClass(sessionStatus(drawerSession))}`}>
             {#if statusShowsDot(sessionStatus(drawerSession))}<span class="pill-dot"></span>{/if}
             {sessionStatus(drawerSession)}
           </span>
           {#if drawerSessionArchived}
-            <span class="pill pill-fail" style="display: inline-flex; margin-left: 6px;"><span class="pill-dot"></span>archived</span>
+            <span class="pill pill-fail"><span class="pill-dot"></span>archived</span>
           {/if}
+          <span class="drawer-head-toolbar-sep" aria-hidden="true"></span>
+          <button
+            class="btn btn-ghost btn-sm drawer-refresh"
+            class:drawer-refresh-busy={drawerRefreshing}
+            type="button"
+            onclick={refreshDrawer}
+            disabled={drawerRefreshing}
+            aria-label="Refresh session"
+          >
+            <Icon name="refresh" size={15} class="drawer-refresh-icon" />
+          </button>
+          <button class="btn btn-ghost btn-sm" type="button" onclick={closeDrawer}>Close</button>
         </div>
       </div>
-      <div class="drawer-head-actions">
-        <button class="btn btn-ghost btn-sm drawer-refresh" class:drawer-refresh-busy={drawerLoading} type="button" onclick={refreshDrawer} disabled={drawerLoading}>
-          <Icon name="refresh" size={14} class="drawer-refresh-icon" />
-        </button>
-        <button class="btn btn-ghost btn-sm" type="button" onclick={closeDrawer}>Close</button>
-      </div>
+      <div class="mono drawer-dir" title={drawerSession.directory || ''}>{shortPath(drawerSession.directory) || '(unknown directory)'}</div>
     </header>
     <div class="drawer-tabs">
       <button class:active={drawerTab === 'messages'} type="button" onclick={() => (drawerTab = 'messages')}>Messages</button>
@@ -1891,19 +1995,70 @@
         {#if drawerMessages.length === 0}
           <div class="empty">No messages yet.</div>
         {:else}
-          <ol class="msg-list">
-            {#each drawerMessages as message}
-              {@const ts = messageTimestamp(message)}
-              {@const lines = summarizeMessage(message)}
-              <li class={`msg msg-${messageRole(message)}`}>
-                <div class="msg-meta">
-                  <span class="mono msg-role">{messageRole(message)}</span>
-                  {#if ts}<span class="mono msg-ts">{ts}</span>{/if}
-                </div>
-                <div class="msg-body">
-                  {#each lines as line}<div class="msg-line">{line}</div>{/each}
-                </div>
-              </li>
+          <ol class="msg-thread">
+            {#each drawerMessages as message, msgIndex}
+              {@const blocks = buildMessageBlocks(message)}
+              {#if blocks.length > 0}
+                {@const role = messageRole(message)}
+                {@const entryId = messageEntryId(message, msgIndex)}
+                {@const ts = messageTimestamp(message)}
+                <li class={`msg-bubble msg-bubble-${role}`}>
+                  {#if ts}<time class="msg-bubble-ts">{ts}</time>{/if}
+                  <div class="msg-bubble-body">
+                    {#each blocks as block, blockIndex}
+                      {@const expandKey = blockExpandKey(entryId, blockIndex)}
+                      {@const expanded = isBlockExpanded(expandKey)}
+                      {#if block.type === 'text'}
+                        {#if block.collapsed && !expanded}
+                          <button type="button" class="msg-fold" onclick={() => toggleMsgBlock(expandKey)}>
+                            {foldLabel(block)}
+                          </button>
+                        {:else}
+                          <div class={`msg-text${isLogLike(block.text) ? ' msg-log' : ''}`}>{block.text}</div>
+                          {#if block.collapsed}
+                            <button type="button" class="msg-fold msg-fold-inline" onclick={() => toggleMsgBlock(expandKey)}>Show less</button>
+                          {/if}
+                        {/if}
+                      {:else if block.type === 'reasoning'}
+                        {#if !expanded}
+                          <button type="button" class="msg-fold msg-fold-muted" onclick={() => toggleMsgBlock(expandKey)}>
+                            {foldLabel(block)}
+                          </button>
+                        {:else}
+                          <div class="msg-text msg-reasoning">{block.text}</div>
+                          <button type="button" class="msg-fold msg-fold-inline" onclick={() => toggleMsgBlock(expandKey)}>Hide thinking</button>
+                        {/if}
+                      {:else if block.type === 'tool'}
+                        {#if !expanded}
+                          <button type="button" class="msg-fold msg-fold-tool" onclick={() => toggleMsgBlock(expandKey)}>
+                            {block.summary}
+                          </button>
+                        {:else}
+                          {#if block.detail}
+                            <pre class="msg-pre">{block.detail}</pre>
+                          {:else}
+                            <div class="msg-text dim">{block.summary}</div>
+                          {/if}
+                          <button type="button" class="msg-fold msg-fold-inline" onclick={() => toggleMsgBlock(expandKey)}>Hide tool</button>
+                        {/if}
+                      {:else if block.type === 'tool-result'}
+                        {#if block.collapsed && !expanded}
+                          <button type="button" class="msg-fold msg-fold-tool" onclick={() => toggleMsgBlock(expandKey)}>
+                            {foldLabel(block)}
+                          </button>
+                        {:else if block.text}
+                          <pre class="msg-pre">{block.text}</pre>
+                          {#if block.collapsed}
+                            <button type="button" class="msg-fold msg-fold-inline" onclick={() => toggleMsgBlock(expandKey)}>Show less</button>
+                          {/if}
+                        {:else}
+                          <div class="msg-text dim">{block.summary}</div>
+                        {/if}
+                      {/if}
+                    {/each}
+                  </div>
+                </li>
+              {/if}
             {/each}
           </ol>
         {/if}
