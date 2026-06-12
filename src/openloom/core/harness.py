@@ -126,6 +126,43 @@ class HarnessRunner:
         ))
         return {"ok": True, "taskId": task_id, "store_version": sv}
 
+    def _auto_pause(self, task_id: str, reason: str) -> None:
+        sv = self.store.update_task(task_id, status="paused", next_check_at=None, last_summary=reason)
+        self.store.append_check_log(task_id, status="paused", summary=reason)
+        self.bus.emit(Event(
+            type=EventType.TASK_UPDATED, task_id=task_id, store_version=sv,
+            data={"status": "paused", "summary": reason},
+        ))
+
+    async def _budget_limit_reason(self, task: dict[str, Any], spec: Any) -> str | None:
+        if spec.max_runtime_minutes:
+            created = float(task.get("created_at") or time.time())
+            elapsed_min = (time.time() - created) / 60.0
+            if elapsed_min >= spec.max_runtime_minutes:
+                return f"Runtime limit reached ({spec.max_runtime_minutes} min)"
+        if not spec.max_tokens:
+            return None
+        session_ids = task.get("session_ids") or []
+        if not session_ids:
+            return None
+        try:
+            sessions = await self.opencode.list_sessions()
+        except Exception:
+            return None
+        by_id = {
+            str(item.get("id")): item
+            for item in sessions
+            if isinstance(item, dict) and item.get("id")
+        }
+        total = 0
+        for session_id in session_ids:
+            session = by_id.get(str(session_id))
+            if session is not None:
+                total += self.prompts.session_total_tokens(session)
+        if total >= spec.max_tokens:
+            return f"Token limit reached ({total:,} / {spec.max_tokens:,})"
+        return None
+
     async def tick(self) -> None:
         due = self.store.list_due_tasks()
         for task in due:
@@ -162,6 +199,11 @@ class HarnessRunner:
 
         spec = self.prompts.TaskSpec.from_dict(spec_data)
 
+        budget_reason = await self._budget_limit_reason(task, spec)
+        if budget_reason:
+            self._auto_pause(task_id, budget_reason)
+            return
+
         live_raw = await self.opencode.session_status()
         live = live_raw.get(session_id)
         status_text = self.status.normalize_session_status(live) or ""
@@ -172,10 +214,18 @@ class HarnessRunner:
         result: CheckResult = self.checker.check(messages, spec_data)
 
         current_step = int(task.get("current_step") or 0)
-        if result.step_done > 0:
-            current_step = max(current_step, min(result.step_done, len(spec.steps) - 1))
+        progress_step = int(result.step_done or 0)
+        if progress_step > 0:
+            current_step = max(current_step, min(progress_step, len(spec.steps) - 1))
 
         completed_steps = list(task.get("completed_steps") or [])
+        max_done_at_start = max(completed_steps) if completed_steps else 0
+        made_progress = (
+            is_busy
+            or result.task_complete
+            or progress_step > max_done_at_start
+            or progress_step > max(current_step, max_done_at_start)
+        )
         all_steps_reported = len(spec.steps) > 0 and result.step_done >= len(spec.steps)
         has_final = bool(spec.acceptance)
         task_finished = self.prompts.task_is_finished(
@@ -185,6 +235,9 @@ class HarnessRunner:
             step_count=len(spec.steps),
             acceptance_count=len(spec.acceptance),
         )
+
+        nudge: str | None = None
+        nudge_detail = status_text
 
         perm = await self.opencode.resolve_session_permissions(session_id, spec.auto_accept_permissions)
         if perm:
@@ -203,16 +256,25 @@ class HarnessRunner:
             status = "running"
             summary = "Session idle — verifying progress"
             agent_name: str | None = None if spec.agent == "opencode" else spec.agent
-            nudge: str | None = None
 
-            if self.prompts.needs_continue_reply(messages):
-                step_name = spec.steps[min(current_step, len(spec.steps) - 1)]
-                nudge = (
-                    f"Yes — proceed autonomously with step {current_step + 1}: {step_name}. "
-                    "Do not ask for confirmation between harness steps; implement directly. "
-                    f"Reply with STEP DONE: {current_step + 1} when this step is finished."
+            idle_checks = int(task.get("idle_checks") or 0)
+            max_idle = int(self.prompts.MAX_IDLE_NUDGES)
+            if (
+                max_idle > 0
+                and not is_busy
+                and not made_progress
+                and idle_checks >= max_idle
+            ):
+                self._auto_pause(
+                    task_id,
+                    f"Auto-paused after {idle_checks} idle checks without progress",
                 )
-                summary = f"Auto-continued to step {current_step + 1}"
+                return
+
+            if self.prompts.needs_asking_reply(messages):
+                step_name = spec.steps[min(current_step, len(spec.steps) - 1)] if spec.steps else None
+                nudge = self.prompts.auto_decide_reply(step_name=step_name)
+                summary = "Auto-decided: proceed without confirmation"
             elif has_final and all_steps_reported and result.acceptance_checked < len(spec.acceptance):
                 nudge = self.prompts.build_final_checks_nudge(spec)
                 summary = "Waiting on final checks"
@@ -245,12 +307,17 @@ class HarnessRunner:
                 )
                 summary = "Periodic check — requested status confirmation"
 
+            if nudge and self.prompts.already_nudged(task, nudge):
+                nudge = None
+                summary = "Skipped duplicate nudge"
+
             if nudge:
                 await self.opencode.send_prompt_async(
                     session_id=session_id,
                     prompt=nudge,
                     agent=agent_name,
                 )
+                nudge_detail = f"nudge:{self.prompts.nudge_fingerprint(nudge)}|{status_text}"
 
         if result.step_done > 0 and result.step_done not in completed_steps:
             completed_steps.append(result.step_done)
@@ -264,10 +331,10 @@ class HarnessRunner:
             step_progress = 1.0 if task_finished else 0.0
 
         idle_checks = int(task.get("idle_checks") or 0)
-        if not is_busy:
-            idle_checks += 1
-        else:
+        if made_progress or is_busy:
             idle_checks = 0
+        elif status == "running":
+            idle_checks += 1
 
         interval = int(task.get("check_interval_seconds", 300))
         next_check = None if status in ("completed", "failed", "archived") else now + interval
@@ -283,7 +350,8 @@ class HarnessRunner:
             next_check_at=next_check,
             last_summary=summary,
         )
-        self.store.append_check_log(task_id, status=status, summary=summary, detail=status_text)
+        log_detail = nudge_detail if nudge_detail.startswith("nudge:") else status_text
+        self.store.append_check_log(task_id, status=status, summary=summary, detail=log_detail)
 
         self.bus.emit(Event(
             type=EventType.TASK_UPDATED,

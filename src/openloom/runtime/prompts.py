@@ -8,6 +8,7 @@ from typing import Any
 import yaml
 
 MIN_CHECK_INTERVAL_SECONDS = 300  # 5 minutes
+MAX_IDLE_NUDGES = 0  # 0 = disabled; set >0 to auto-pause after N idle checks without progress
 
 
 def normalize_check_interval_seconds(
@@ -35,10 +36,12 @@ class TaskSpec:
     agent: str = "opencode"
     check_interval_seconds: int = 300
     initial_prompt: str | None = None
-    auto_accept_permissions: bool = True
+    auto_accept_permissions: bool = False
+    max_tokens: int | None = None
+    max_runtime_minutes: int | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        data = {
             "name": self.name,
             "workspace": self.workspace,
             "goal": self.goal,
@@ -51,6 +54,11 @@ class TaskSpec:
             "initial_prompt": self.initial_prompt,
             "auto_accept_permissions": self.auto_accept_permissions,
         }
+        if self.max_tokens is not None:
+            data["max_tokens"] = self.max_tokens
+        if self.max_runtime_minutes is not None:
+            data["max_runtime_minutes"] = self.max_runtime_minutes
+        return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> TaskSpec:
@@ -67,7 +75,9 @@ class TaskSpec:
             agent=str(data.get("agent") or "opencode").strip() or "opencode",
             check_interval_seconds=interval,
             initial_prompt=(str(data["initial_prompt"]).strip() if data.get("initial_prompt") else None),
-            auto_accept_permissions=bool(data.get("auto_accept_permissions", True)),
+            auto_accept_permissions=bool(data.get("auto_accept_permissions", False)),
+            max_tokens=_optional_positive_int(data.get("max_tokens")),
+            max_runtime_minutes=_optional_positive_int(data.get("max_runtime_minutes")),
         )
 
 
@@ -138,6 +148,16 @@ def _interval_from_text(value: str, *, default_seconds: int = MIN_CHECK_INTERVAL
     if raw.endswith("s"):
         return normalize_check_interval_seconds(value=digits)
     return normalize_check_interval_seconds(minutes=digits)
+
+
+def _optional_positive_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
 
 def _parse_interval_seconds(data: dict[str, Any]) -> int:
@@ -462,6 +482,13 @@ def detect_progress_from_messages(messages: list[dict[str, Any]], spec: TaskSpec
     return detect_progress(assistant_transcript(messages), spec)
 
 
+def session_total_tokens(session: dict[str, Any]) -> int:
+    from .telemetry import parse_session_tokens
+
+    tokens = parse_session_tokens(session)
+    return int(sum(tokens.values()))
+
+
 _CONTINUE_PATTERNS = (
     "should i proceed",
     "should i continue",
@@ -473,26 +500,95 @@ _CONTINUE_PATTERNS = (
     "do you want me to",
 )
 
+_ASKING_PATTERNS = (
+    "which would you prefer",
+    "which option",
+    "would you like me to",
+    "would you prefer",
+    "should i use",
+    "should i choose",
+    "should i go with",
+    "what should i",
+    "how should i",
+    "can i proceed",
+    "is it ok to",
+    "is it okay to",
+    "please confirm",
+    "let me know if",
+    "which approach",
+    "or should i",
+    "do you want",
+    "confirm whether",
+)
+
 
 def agent_awaiting_continue(text: str) -> bool:
     lower = text.lower()
     return any(pattern in lower for pattern in _CONTINUE_PATTERNS)
 
 
-def needs_continue_reply(messages: list[dict[str, Any]]) -> bool:
-    awaiting_index: int | None = None
+def looks_like_asking(text: str) -> bool:
+    lower = text.lower().strip()
+    if not lower:
+        return False
+    if agent_awaiting_continue(lower):
+        return True
+    if any(pattern in lower for pattern in _ASKING_PATTERNS):
+        return True
+    if "?" not in lower or len(lower) > 500:
+        return False
+    if "```" in lower or "http://" in lower or "https://" in lower:
+        return False
+    asking_starters = (
+        "should ", "would ", "do you", "can i", "may i", "shall i",
+        "which ", "what ", "how ", "could i",
+    )
+    return any(lower.lstrip().startswith(starter) for starter in asking_starters)
+
+
+def auto_decide_reply(*, step_name: str | None = None) -> str:
+    step_line = f" Focus on step: {step_name}." if step_name else ""
+    return (
+        "Yes — proceed autonomously with your recommended approach."
+        f"{step_line} Do not ask for confirmation between harness steps; implement directly."
+        " Reply with STEP DONE: <number> when a step is finished, or TASK COMPLETE when all checks pass."
+    )
+
+
+def needs_asking_reply(messages: list[dict[str, Any]]) -> bool:
     for idx in range(len(messages) - 1, -1, -1):
         if message_role(messages[idx]) != "assistant":
             continue
-        if agent_awaiting_continue(_message_text(messages[idx])):
-            awaiting_index = idx
-            break
-    if awaiting_index is None:
-        return False
-    for idx in range(awaiting_index + 1, len(messages)):
-        if message_role(messages[idx]) == "user":
-            return False
-    return True
+        if not looks_like_asking(_message_text(messages[idx])):
+            continue
+        for later in range(idx + 1, len(messages)):
+            if message_role(messages[later]) == "user":
+                return False
+        return True
+    return False
+
+
+def needs_continue_reply(messages: list[dict[str, Any]]) -> bool:
+    return needs_asking_reply(messages)
+
+
+def nudge_fingerprint(text: str) -> str:
+    import hashlib
+
+    return hashlib.sha256(text.encode()).hexdigest()[:16]
+
+
+def last_log_detail(task: dict[str, Any]) -> str:
+    log = task.get("check_log") or []
+    if not log:
+        return ""
+    return str(log[-1].get("detail") or "")
+
+
+def already_nudged(task: dict[str, Any], nudge: str) -> bool:
+    fp = nudge_fingerprint(nudge)
+    detail = last_log_detail(task)
+    return detail.startswith(f"nudge:{fp}")
 
 
 def messages_indicate_busy(messages: list[dict[str, Any]]) -> bool:

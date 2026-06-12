@@ -171,10 +171,15 @@ def create_app(
         else:
             raise HTTPException(status_code=400, detail="plan, prompt, or spec is required")
 
-        auto_accept = bool(body["autoAcceptPermissions"]) if "autoAcceptPermissions" in body else True
+        auto_accept = bool(body["autoAcceptPermissions"]) if "autoAcceptPermissions" in body else False
         from openloom.runtime.prompts import TaskSpec
 
-        spec = TaskSpec.from_dict({**spec.to_dict(), "auto_accept_permissions": auto_accept})
+        spec_extra: dict[str, Any] = {"auto_accept_permissions": auto_accept}
+        if "maxTokens" in body:
+            spec_extra["max_tokens"] = body["maxTokens"]
+        if "maxRuntimeMinutes" in body:
+            spec_extra["max_runtime_minutes"] = body["maxRuntimeMinutes"]
+        spec = TaskSpec.from_dict({**spec.to_dict(), **spec_extra})
 
         from pathlib import Path as _P
 
