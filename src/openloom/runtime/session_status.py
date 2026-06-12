@@ -47,10 +47,14 @@ def is_subagent_session(session: dict[str, Any]) -> bool:
 
 
 def is_archived_session(session: dict[str, Any]) -> bool:
+    # OpenCode 1.16.2 returns the archived timestamp inside the time
+    # block as time.archived (epoch ms). Earlier OpenLoom code looked at
+    # the top-level "archived" key, which the server never populates,
+    # so the archived count was always 0.
     time_block = session.get("time")
-    if isinstance(time_block, dict):
-        return (time_block.get("archived") or 0) > 0
-    return False
+    if not isinstance(time_block, dict):
+        return False
+    return (time_block.get("archived") or 0) > 0
 
 
 def is_visible_session(session: dict[str, Any]) -> bool:

@@ -51,7 +51,6 @@ class SessionMonitor:
             sid = session["id"]
             raw = raw_status.get(sid)
             status = normalize_session_status(raw) or IDLE
-
             updated = session_updated_at(session)
             if updated > 0 and self._status.get(sid) != status:
                 self._status[sid] = status

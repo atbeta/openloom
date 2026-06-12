@@ -73,7 +73,7 @@ async def full_state(
 ) -> dict[str, Any]:
     """Composite state for the Web UI dashboard (OpenDeck protocol compat)."""
     from openloom.runtime.session_status import (
-        BUSY, is_visible_session, session_updated_at,
+        BUSY, is_archived_session, is_visible_session, session_updated_at,
     )
     from openloom.runtime.telemetry import aggregate_usage_periods
 
@@ -85,16 +85,22 @@ async def full_state(
 
     if health.ok:
         try:
-            sessions = monitor.sessions  # already sorted + filtered
+            # We need the FULL list (including archived) here because
+            # the dashboard reports an "archived" section. monitor.sessions
+            # has already filtered archived out via is_visible_session,
+            # so we must call list_sessions() again for the all-seeds list.
+            sessions = await client.list_sessions()
             session_status = monitor.status
         except Exception as exc:  # noqa: BLE001
             session_error = str(exc)
+            sessions = []
 
+    # The archived flag lives in time.archived on OpenCode 1.16.2; the
+    # earlier version of this code looked at the top-level "archived"
+    # key which the server never returns — that was the source of the
+    # "archived count is always 0" bug.
     try:
-        archived_sessions = [
-            s for s in sessions
-            if isinstance(s.get("time"), dict) and (s["time"].get("archived") or 0) > 0
-        ]
+        archived_sessions = [s for s in sessions if is_archived_session(s)]
     except Exception:
         archived_sessions = []
 
@@ -141,7 +147,7 @@ async def full_state(
         "archivedSessions": [
             {"id": s["id"], "title": s.get("title", ""),
              "directory": s.get("directory", ""),
-             "archived_at": s.get("time", {}).get("archived")}
+             "archived_at": s.get("archived")}
             for s in archived_sessions
         ],
         "sessionStatus": session_status,
