@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -9,7 +10,7 @@ from openloom.core.harness import HarnessRunner
 from openloom.core.registry import get_checker, get_sink, get_source
 from openloom.core.store import Store
 from openloom.runtime import prompts, session_status
-from openloom.runtime.opencode import OpenCodeClient
+from openloom.runtime.opencode import OpenCodeClient, format_opencode_unreachable_help
 
 import openloom.levels.manual.checker  # noqa: F401
 import openloom.levels.manual.sink  # noqa: F401
@@ -36,8 +37,11 @@ async def run_watch(
 
     health = await client.health()
     if not health.ok:
-        print(f"ERROR: OpenCode server not reachable: {health.message}")
-        return
+        print(
+            format_opencode_unreachable_help(settings.opencode_url, detail=health.message),
+            file=sys.stderr,
+        )
+        sys.exit(1)
 
     db_path = Path(store_path) if store_path else settings.database_path
     store = Store(db_path)

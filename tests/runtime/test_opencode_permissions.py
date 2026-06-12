@@ -37,8 +37,8 @@ async def test_list_pending_permissions_filters_by_session() -> None:
     import httpx
     import respx
 
-    client = OpenCodeClient("http://127.0.0.1:14096", "opencode", "xxx")
-    with respx.mock(base_url="http://127.0.0.1:14096") as mock:
+    client = OpenCodeClient("http://127.0.0.1:4096", "opencode", "")
+    with respx.mock(base_url="http://127.0.0.1:4096") as mock:
         mock.get("/permission").mock(
             return_value=httpx.Response(
                 200,

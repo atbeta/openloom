@@ -21,9 +21,9 @@ class Settings:
             database = Path.cwd() / database
 
         return cls(
-            opencode_url=os.getenv("OPENLOOM_OPENCODE_URL", "http://127.0.0.1:14096").rstrip("/"),
+            opencode_url=os.getenv("OPENLOOM_OPENCODE_URL", "http://127.0.0.1:4096").rstrip("/"),
             opencode_username=os.getenv("OPENLOOM_OPENCODE_USERNAME", "opencode"),
-            opencode_password=os.getenv("OPENLOOM_OPENCODE_PASSWORD", "xxx"),
+            opencode_password=os.getenv("OPENLOOM_OPENCODE_PASSWORD", ""),
             database_path=database,
             ui_host=os.getenv("OPENLOOM_UI_HOST", "127.0.0.1"),
             ui_port=int(os.getenv("OPENLOOM_UI_PORT", "55413")),

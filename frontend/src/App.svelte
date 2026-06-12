@@ -1093,7 +1093,16 @@
         <span>{state.server.ok ? 'Connected' : 'Offline'}</span>
       </div>
       <div class="conn-url mono" title={state.server.url}>{state.server.url.replace(/^https?:\/\//, '') || '—'}</div>
-      <div class="conn-meta">Updated {refreshAgeSeconds === null ? '—' : `${refreshAgeSeconds}s ago`}</div>
+      {#if !state.server.ok}
+        <div class="conn-hint">
+          <p>Start OpenCode: <code>opencode serve</code></p>
+          {#if state.server.message && state.server.message !== 'loading'}
+            <p class="conn-hint-detail mono">{state.server.message}</p>
+          {/if}
+        </div>
+      {:else}
+        <div class="conn-meta">Updated {refreshAgeSeconds === null ? '—' : `${refreshAgeSeconds}s ago`}</div>
+      {/if}
     </div>
 
     <div class="sidebar-section sidebar-recent">
@@ -1165,6 +1174,20 @@
 
     {#if error}
       <div class="error" style="padding: 10px 20px;">{error}</div>
+    {/if}
+
+    {#if !loading && !state.server.ok}
+      <div class="opencode-offline-banner" role="alert">
+        <strong>OpenCode is not reachable</strong>
+        <p>
+          Session monitoring, new tasks, and dispatch need OpenCode on
+          <span class="mono">{state.server.url || 'http://127.0.0.1:4096'}</span>.
+        </p>
+        <p>In another terminal run <code>opencode serve</code>, then refresh this page.</p>
+        {#if state.server.message && state.server.message !== 'loading'}
+          <p class="mono dim">{state.server.message}</p>
+        {/if}
+      </div>
     {/if}
 
     {#if (state.permissions || []).length > 0}

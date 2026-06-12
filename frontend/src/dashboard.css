@@ -36,6 +36,60 @@
   color: var(--meta);
 }
 
+.conn-hint {
+  margin-top: 8px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--fg-2);
+}
+
+.conn-hint p {
+  margin: 0 0 4px;
+}
+
+.conn-hint code {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 1px 4px;
+  border-radius: var(--radius-sm);
+  background: color-mix(in oklch, var(--fg) 6%, transparent);
+}
+
+.conn-hint-detail {
+  font-size: 10px;
+  color: var(--muted);
+  word-break: break-word;
+}
+
+.opencode-offline-banner {
+  margin: 0 20px 12px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in oklch, var(--danger) 35%, var(--border));
+  border-radius: var(--radius-md);
+  background: color-mix(in oklch, var(--danger) 8%, var(--surface));
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.opencode-offline-banner strong {
+  display: block;
+  margin-bottom: 6px;
+}
+
+.opencode-offline-banner p {
+  margin: 0 0 6px;
+  color: var(--fg-2);
+}
+
+.opencode-offline-banner p:last-child {
+  margin-bottom: 0;
+}
+
+.opencode-offline-banner code {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
 .stat-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;

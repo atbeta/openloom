@@ -38,8 +38,12 @@ There is intentionally **no `[all]`** extra — pick capabilities as you grow.
 
 ### 1. Configure OpenCode connection
 
+Most local setups need no env vars — OpenLoom defaults to `http://127.0.0.1:4096` with no HTTP auth (same as `opencode serve` without `OPENCODE_SERVER_PASSWORD`).
+
+If your OpenCode server uses HTTP basic auth:
+
 ```bash
-export OPENLOOM_OPENCODE_URL=http://127.0.0.1:14096
+export OPENLOOM_OPENCODE_URL=http://127.0.0.1:4096
 export OPENLOOM_OPENCODE_USERNAME=opencode
 export OPENLOOM_OPENCODE_PASSWORD=your-password
 ```
@@ -47,7 +51,7 @@ export OPENLOOM_OPENCODE_PASSWORD=your-password
 Windows (PowerShell):
 
 ```powershell
-$env:OPENLOOM_OPENCODE_URL = "http://127.0.0.1:14096"
+$env:OPENLOOM_OPENCODE_URL = "http://127.0.0.1:4096"
 $env:OPENLOOM_OPENCODE_USERNAME = "opencode"
 $env:OPENLOOM_OPENCODE_PASSWORD = "your-password"
 ```

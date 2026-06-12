@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import sys
 from typing import Any
 
 
@@ -14,7 +15,7 @@ async def run_serve(settings: Any) -> None:
     from openloom.core.registry import get_checker, get_sink
     from openloom.core.store import Store
     from openloom.runtime import prompts, session_status as status_mod
-    from openloom.runtime.opencode import OpenCodeClient
+    from openloom.runtime.opencode import OpenCodeClient, format_opencode_unreachable_help
 
     from openloom.levels.server.monitor import SessionMonitor
     from openloom.server.app import create_app
@@ -28,8 +29,14 @@ async def run_serve(settings: Any) -> None:
 
     health = await client.health()
     if not health.ok:
-        print(f"WARNING: OpenCode not reachable: {health.message}")
-        print("  Session monitoring and dispatch will be unavailable.")
+        print(
+            format_opencode_unreachable_help(settings.opencode_url, detail=health.message),
+            file=sys.stderr,
+        )
+        print(
+            "OpenLoom will keep running; connect OpenCode above, then refresh the dashboard.",
+            file=sys.stderr,
+        )
 
     bus = EventBus()
 

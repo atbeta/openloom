@@ -131,10 +131,46 @@ class OpenCodeHealth:
     message: str
 
 
+def _health_error_message(base_url: str, exc: BaseException) -> str:
+    text = str(exc).strip() or exc.__class__.__name__
+    lowered = text.lower()
+    if "connection refused" in lowered or "econnrefused" in lowered:
+        return f"connection refused — nothing listening on {base_url}"
+    if "timed out" in lowered or "timeout" in lowered:
+        return f"connection timed out — {base_url}"
+    return f"{text} ({base_url})"
+
+
+def format_opencode_unreachable_help(url: str, *, detail: str | None = None) -> str:
+    """Multi-line CLI hint when OpenCode HTTP API is down."""
+    lines = [
+        "",
+        "OpenCode is not reachable.",
+    ]
+    if detail:
+        lines.append(f"  {detail}")
+    lines.extend(
+        [
+            f"  Expected: {url}",
+            "",
+            "  Start OpenCode in another terminal:",
+            "    opencode serve",
+            "  (or open the OpenCode app/TUI — it also exposes the HTTP API)",
+            "",
+            f"  Verify: curl -s {url.rstrip('/')}/global/health",
+            "",
+            "  Different host/port? export OPENLOOM_OPENCODE_URL=http://127.0.0.1:4096",
+            "  Server password set?  export OPENLOOM_OPENCODE_PASSWORD=your-password",
+            "",
+        ]
+    )
+    return "\n".join(lines)
+
+
 class OpenCodeClient:
     def __init__(self, base_url: str, username: str, password: str) -> None:
         self.base_url = base_url.rstrip("/")
-        self.auth = (username, password)
+        self.auth = (username or "opencode", password) if password else None
         self._project_cache: list[dict[str, Any]] | None = None
         self._project_cache_at: float = 0.0
         self._project_lock = asyncio.Lock()
@@ -153,7 +189,7 @@ class OpenCodeClient:
                 return OpenCodeHealth(True, response.status_code, "reachable")
             return OpenCodeHealth(False, response.status_code, response.text[:200])
         except Exception as exc:  # noqa: BLE001
-            return OpenCodeHealth(False, None, str(exc))
+            return OpenCodeHealth(False, None, _health_error_message(self.base_url, exc))
 
     async def list_sessions(self) -> list[dict[str, Any]]:
         try:

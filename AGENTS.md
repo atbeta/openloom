@@ -48,7 +48,7 @@ tests/contracts/ # 架构守门测试
 
 - Python >= 3.11，包管理用 `uv`，构建后端 hatchling，src layout。
 - 测试 `pytest`，HTTP mock 用 `respx`；lint 用 `ruff` + `mypy`。
-- 运行依赖外部 OpenCode Server（默认 `http://127.0.0.1:14096`，Basic Auth 凭据走环境变量 `OPENLOOM_*`，绝不写入代码或提交 git）。
+- 运行依赖外部 OpenCode Server（默认 `http://127.0.0.1:4096`；仅当 OpenCode 启用了 `OPENCODE_SERVER_PASSWORD` 时才需配置 `OPENLOOM_OPENCODE_*` 凭据，绝不写入代码或提交 git）。
 
 ## 提交信息规范
 
