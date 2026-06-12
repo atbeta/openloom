@@ -23,15 +23,35 @@
     },
   });
 
-  let mainView = $state('dashboard');
-  let usagePeriod = $state('total');
-
   const usagePeriods = [
     { id: 'today', label: 'Today' },
     { id: 'week', label: 'This week' },
     { id: 'month', label: 'This month' },
     { id: 'total', label: 'Total' },
   ];
+
+  const USAGE_PERIOD_PREFS_KEY = 'openloom.prefs.usagePeriod';
+  const VALID_USAGE_PERIODS = new Set(usagePeriods.map((period) => period.id));
+
+  function loadUsagePeriodPref() {
+    if (typeof localStorage === 'undefined') return 'today';
+    const raw = localStorage.getItem(USAGE_PERIOD_PREFS_KEY);
+    return VALID_USAGE_PERIODS.has(raw) ? raw : 'today';
+  }
+
+  function saveUsagePeriodPref(id) {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(USAGE_PERIOD_PREFS_KEY, id);
+    }
+  }
+
+  function setUsagePeriod(id) {
+    usagePeriod = id;
+    saveUsagePeriodPref(id);
+  }
+
+  let mainView = $state('dashboard');
+  let usagePeriod = $state(loadUsagePeriodPref());
 
   let loading = $state(true);
   let error = $state('');
@@ -1271,7 +1291,7 @@
                 type="button"
                 class="period-summary-card"
                 class:active={usagePeriod === period.id}
-                onclick={() => (usagePeriod = period.id)}
+                onclick={() => setUsagePeriod(period.id)}
               >
                 <span class="period-summary-label">{period.label}</span>
                 <span class="period-summary-value mono">{formatTokens(slice.tokenTotal)}</span>
