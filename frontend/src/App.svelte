@@ -1775,7 +1775,7 @@
 
 {#if drawerTask}
   <div class="drawer-mask" onclick={closeTaskDrawer} role="presentation"></div>
-  <aside class="drawer" role="dialog" aria-label="Task detail">
+  <div class="drawer" role="dialog" aria-label="Task detail">
     <header class="drawer-head">
       <div class="drawer-head-main">
         <div class="drawer-eyebrow">Task</div>
@@ -1899,12 +1899,12 @@
         <button class="btn btn-ghost btn-danger" type="button" onclick={() => deleteArchivedTask(drawerTask.id)}>Delete</button>
       {/if}
     </footer>
-  </aside>
+  </div>
 {/if}
 
 {#if drawerSession}
   <div class="drawer-mask" onclick={closeDrawer} role="presentation"></div>
-  <aside class="drawer" role="dialog" aria-label="Session detail">
+  <div class="drawer" role="dialog" aria-label="Session detail">
     <header class="drawer-head drawer-head-compact drawer-head-stacked">
       <div class="drawer-head-top">
         <h3 class="drawer-head-title" title={drawerSession.title}>{drawerSession.title}</h3>
@@ -2131,7 +2131,7 @@
         <button class="btn btn-ghost" type="button" onclick={archiveSessionFromDrawer}>Archive</button>
       {/if}
     </footer>
-  </aside>
+  </div>
 {/if}
 
 {#if folderPickerOpen}
