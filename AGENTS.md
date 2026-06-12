@@ -4,7 +4,7 @@
 
 **OpenLoom** 是 OpenCode 的**观测面 + 极简无人值守 harness**，不替代 OpenCode、不发明新编排概念。
 
-- **产品边界**：补 OpenCode HTTP API 缺的界面（session 监控、发 prompt、归档、diff）；**Task** 是唯一用户操作实体——发 prompt 与夜间巡检都是 Task，`watch=false` 一次性发送，`watch=true` 开启 harness 巡检。
+- **产品边界**：补 OpenCode HTTP API 缺的界面（session 监控、发 prompt、归档、diff）；**Task** 是唯一用户操作实体——创建即带 harness 巡检（默认 5 分钟，最短 5 分钟）。
 - **单一 Task 概念**：`POST /api/tasks` 接受 `{ intent, plan?, checkIntervalMinutes?, sessionId? }`（UI：Generate plan → 审阅 → Start）或 CLI 的 `{ format, spec }`。
 - **明确不做**：`ephemeral` / `bind` / `/api/dispatch` / Send|Watch 双入口 UI；一切 deck 37130ca 任务模型实验一律丢弃。DB 无历史兼容负担，schema 可直接改。
 - **7 级渐进（L0-L7）**：每一级独立可用、用户主动升级。L0 字符串判定 → L2 OpenSpec → L4 预归档校验 → L6 server 观测台。

@@ -110,10 +110,13 @@ def create_app(
         spec_text = body.get("spec")
         interval: int | None = None
         if "checkIntervalMinutes" in body:
-            minutes = int(body["checkIntervalMinutes"])
-            interval = 0 if minutes <= 0 else max(60, minutes * 60)
+            from openloom.runtime.prompts import normalize_check_interval_seconds
+
+            interval = normalize_check_interval_seconds(minutes=int(body["checkIntervalMinutes"]))
         elif body.get("checkIntervalSeconds") is not None:
-            interval = max(0, int(body["checkIntervalSeconds"]))
+            from openloom.runtime.prompts import normalize_check_interval_seconds
+
+            interval = normalize_check_interval_seconds(value=int(body["checkIntervalSeconds"]))
 
         agent = str(body.get("agent") or "opencode")
         mode = str(body.get("mode") or "normal")
@@ -144,7 +147,6 @@ def create_app(
                     prompt,
                     str(body.get("workspace") or ""),
                     check_interval_seconds=interval,
-                    watch=bool(body.get("watch")),
                     agent=agent,
                     mode=mode,
                 )
@@ -207,7 +209,7 @@ def create_app(
             "taskId": task_id,
             "status": "pending",
             "name": spec.name,
-            "watch": spec.check_interval_seconds > 0,
+            "watch": True,
             "sessionId": session_id,
             "steps": len(spec.steps),
             "acceptance": len(spec.acceptance),

@@ -41,7 +41,7 @@
   let selectedTaskId = $state(null);
 
   let taskWorkspace = $state('');
-  let taskCheckInterval = $state(0);
+  let taskCheckInterval = $state(5);
   let taskPlan = $state({
     title: '',
     goal: '',
@@ -74,8 +74,8 @@
   let drawerTaskTab = $state('overview');
 
   const intervalPresets = [
-    { label: 'Never', minutes: 0 },
     { label: '5m', minutes: 5 },
+    { label: '10m', minutes: 10 },
     { label: '15m', minutes: 15 },
     { label: '30m', minutes: 30 },
   ];
@@ -208,8 +208,7 @@
   }
 
   function taskIntervalLabel(task) {
-    const sec = task?.check_interval_seconds || 0;
-    if (sec <= 0) return 'never';
+    const sec = task?.check_interval_seconds || 300;
     if (sec % 60 === 0) return `${sec / 60}m`;
     return `${sec}s`;
   }
@@ -703,7 +702,7 @@
       const plan = serializePlan(taskPlan);
       const body = {
         plan,
-        checkIntervalMinutes: checkIntervalMinutes ?? taskCheckInterval,
+        checkIntervalMinutes: Math.max(5, Number(checkIntervalMinutes ?? taskCheckInterval)),
         workspace: (workspace ?? taskWorkspace).trim() || undefined,
       };
       if (resolvedSessionId) body.sessionId = resolvedSessionId;
@@ -1484,13 +1483,13 @@
             class="interval-preset"
             class:active={taskIntervalIsCustom}
             onclick={() => {
-              if (!taskIntervalIsCustom) taskCheckInterval = 10;
+              if (!taskIntervalIsCustom) taskCheckInterval = 20;
             }}
           >Custom</button>
         </div>
         {#if taskIntervalIsCustom}
           <div class="interval-custom composer-interval-custom">
-            <input id="task-interval" type="number" min="1" max="120" bind:value={taskCheckInterval} aria-label="Custom interval minutes" />
+            <input id="task-interval" type="number" min="5" max="120" bind:value={taskCheckInterval} aria-label="Custom interval minutes" />
             <span class="interval-unit">min</span>
           </div>
         {/if}
@@ -1527,9 +1526,7 @@
             {drawerTask.status}
           </span>
           <span class="mono dim">{taskIntervalLabel(drawerTask)}</span>
-          {#if (drawerTask.check_interval_seconds || 0) > 0}
-            <span class="dim">· {stepProgressLabel(drawerTask)} steps</span>
-          {/if}
+          <span class="dim">· {stepProgressLabel(drawerTask)} steps</span>
         </div>
       </div>
       <div class="drawer-head-actions">
@@ -1617,7 +1614,7 @@
       {/if}
       {#if drawerTask.status === 'paused'}
         <button class="btn btn-ghost" type="button" onclick={() => taskAction('resume', drawerTask.id)}>Resume</button>
-      {:else if !['completed', 'failed', 'archived'].includes(drawerTask.status) && (drawerTask.check_interval_seconds || 0) > 0}
+      {:else if !['completed', 'failed', 'archived'].includes(drawerTask.status)}
         <button class="btn btn-ghost" type="button" onclick={() => taskAction('pause', drawerTask.id)}>Pause</button>
       {/if}
       {#if !['completed', 'archived'].includes(drawerTask.status)}

@@ -78,7 +78,7 @@ Example spec (`openloom.yaml`):
 ```yaml
 name: Fix SSE reconnect
 workspace: /path/to/project
-check_interval_minutes: 5   # 0 = send once, no periodic checks
+check_interval_minutes: 5   # minimum 5; all tasks are harness-watched
 goal: |
   Fix SSE reconnect after network drop.
 steps:

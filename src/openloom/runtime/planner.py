@@ -5,7 +5,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from .prompts import TaskSpec, _title_from_prompt, assistant_transcript
+from .prompts import TaskSpec, _title_from_prompt, assistant_transcript, normalize_check_interval_seconds
 
 
 @dataclass
@@ -151,10 +151,7 @@ def task_spec_from_plan(
     mode: str = "normal",
 ) -> TaskSpec:
     item = plan if isinstance(plan, TaskPlan) else TaskPlan.from_dict(plan)
-    if check_interval_seconds is None:
-        interval = 0
-    else:
-        interval = max(0, int(check_interval_seconds))
+    interval = normalize_check_interval_seconds(value=check_interval_seconds)
     return TaskSpec(
         name=item.name,
         workspace=workspace.strip(),

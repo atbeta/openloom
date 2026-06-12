@@ -242,9 +242,9 @@ class HarnessRunner:
 
         raw_interval = task.get("check_interval_seconds")
         interval = int(raw_interval if raw_interval is not None else spec.check_interval_seconds)
-        one_shot = interval <= 0
+        interval = max(int(self.prompts.MIN_CHECK_INTERVAL_SECONDS), interval)
         structured = bool(spec.steps or spec.acceptance or spec.step_acceptance)
-        if structured or not one_shot:
+        if structured:
             prompt = self.prompts.build_bootstrap_prompt(
                 spec, current_step=int(task.get("current_step") or 0),
             )
@@ -265,9 +265,9 @@ class HarnessRunner:
 
         now = time.time()
         summary = (
-            (f"Prompt sent to session {session_id}" if attached else "Prompt sent")
-            if one_shot
-            else (f"Harness attached to session {session_id}" if attached else "Harness started and bootstrap prompt sent")
+            f"Harness attached to session {session_id}"
+            if attached
+            else "Harness started and bootstrap prompt sent"
         )
         sv = self.store.update_task(
             task_id,
@@ -275,8 +275,9 @@ class HarnessRunner:
             active_session_id=session_id,
             session_ids=session_ids,
             spec=spec.to_dict(),
+            check_interval_seconds=interval,
             last_check_at=now,
-            next_check_at=None if one_shot else now + interval,
+            next_check_at=now + interval,
             error=None,
         )
         self.store.append_check_log(task_id, status="running", summary=summary, detail=f"session={session_id}")

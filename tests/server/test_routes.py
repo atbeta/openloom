@@ -147,19 +147,29 @@ def test_create_task_rejects_empty_prompt(client: TestClient) -> None:
     assert r.status_code == 400
 
 
-def test_create_task_prompt_one_shot(client: TestClient) -> None:
+def test_create_task_prompt_default_interval(client: TestClient) -> None:
     r = client.post("/api/tasks", json={
         "prompt": "hello from task panel",
         "workspace": "/tmp/openloom-smoke",
-        "watch": False,
     })
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["ok"] is True
-    assert body["watch"] is False
+    assert body["watch"] is True
     assert "taskId" in body
     task = client.get(f"/api/tasks/{body['taskId']}").json()["task"]
-    assert task["check_interval_seconds"] == 0
+    assert task["check_interval_seconds"] == 300
+
+
+def test_create_task_clamps_interval_below_minimum(client: TestClient) -> None:
+    r = client.post("/api/tasks", json={
+        "prompt": "quick check",
+        "workspace": "/tmp/openloom-smoke",
+        "checkIntervalMinutes": 0,
+    })
+    assert r.status_code == 200, r.text
+    task = client.get(f"/api/tasks/{r.json()['taskId']}").json()["task"]
+    assert task["check_interval_seconds"] == 300
 
 
 def test_create_task_prompt_watch(client: TestClient) -> None:

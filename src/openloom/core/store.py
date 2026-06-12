@@ -126,7 +126,6 @@ class Store:
             rows = conn.execute(
                 "SELECT * FROM tasks WHERE status IN ('pending', 'running', 'waiting')"
                 " AND (next_check_at IS NULL OR next_check_at <= ?)"
-                " AND (status = 'pending' OR check_interval_seconds > 0)"
                 " ORDER BY COALESCE(next_check_at, 0) ASC LIMIT ?",
                 (now, limit),
             ).fetchall()

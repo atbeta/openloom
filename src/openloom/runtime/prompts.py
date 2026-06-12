@@ -7,6 +7,21 @@ from typing import Any
 
 import yaml
 
+MIN_CHECK_INTERVAL_SECONDS = 300  # 5 minutes
+
+
+def normalize_check_interval_seconds(
+    value: int | None = None,
+    *,
+    minutes: int | None = None,
+    default: int = MIN_CHECK_INTERVAL_SECONDS,
+) -> int:
+    if minutes is not None:
+        return max(MIN_CHECK_INTERVAL_SECONDS, int(minutes) * 60)
+    if value is None:
+        return default
+    return max(MIN_CHECK_INTERVAL_SECONDS, int(value))
+
 
 @dataclass
 class TaskSpec:
@@ -94,29 +109,29 @@ def _parse_steps_and_acceptance(data: dict[str, Any]) -> tuple[list[str], list[l
     return steps, step_acceptance[: len(steps)], global_acceptance
 
 
-def _interval_from_text(value: str, *, default_seconds: int = 300) -> int:
+def _interval_from_text(value: str, *, default_seconds: int = MIN_CHECK_INTERVAL_SECONDS) -> int:
     raw = value.strip().lower()
     digits = int(re.sub(r"[^0-9]", "", raw) or "0")
     if not digits:
         return default_seconds
     if raw.endswith("m"):
-        return max(60, digits * 60)
+        return normalize_check_interval_seconds(minutes=digits)
     if raw.endswith("s"):
-        return max(10, digits)
-    return max(60, digits * 60)
+        return normalize_check_interval_seconds(value=digits)
+    return normalize_check_interval_seconds(minutes=digits)
 
 
 def _parse_interval_seconds(data: dict[str, Any]) -> int:
     if data.get("check_interval_minutes") is not None:
-        return max(60, int(data["check_interval_minutes"]) * 60)
+        return normalize_check_interval_seconds(minutes=int(data["check_interval_minutes"]))
     if data.get("check_interval_seconds") is not None:
-        return max(10, int(data["check_interval_seconds"]))
+        return normalize_check_interval_seconds(value=int(data["check_interval_seconds"]))
     if data.get("check_interval") is not None:
         value = data["check_interval"]
         if isinstance(value, str):
             return _interval_from_text(value)
-        return max(60, int(value) * 60)
-    return 300
+        return normalize_check_interval_seconds(minutes=int(value))
+    return MIN_CHECK_INTERVAL_SECONDS
 
 
 def _title_from_prompt(prompt: str, max_len: int = 60) -> str:
@@ -131,7 +146,6 @@ def task_spec_from_prompt(
     workspace: str,
     *,
     check_interval_seconds: int | None = None,
-    watch: bool = False,
     agent: str = "opencode",
     mode: str = "normal",
     name: str | None = None,
@@ -139,10 +153,7 @@ def task_spec_from_prompt(
     text = prompt.strip()
     if not text:
         raise ValueError("prompt is required")
-    if check_interval_seconds is None:
-        interval = 300 if watch else 0
-    else:
-        interval = max(0, int(check_interval_seconds))
+    interval = normalize_check_interval_seconds(value=check_interval_seconds)
     return TaskSpec(
         name=name or _title_from_prompt(text),
         workspace=workspace.strip(),
