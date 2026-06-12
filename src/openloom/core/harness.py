@@ -109,7 +109,11 @@ class HarnessRunner:
             acceptance_count=len(spec.acceptance),
         )
 
-        if is_busy:
+        perm = await self.opencode.resolve_session_permissions(session_id, spec.auto_accept_permissions)
+        if perm:
+            status = perm["status"]
+            summary = perm["summary"]
+        elif is_busy:
             status = "running"
             summary = "Agent is busy"
         elif status_text == self.status.RETRY or "wait" in status_text or "permission" in status_text:

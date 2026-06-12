@@ -35,6 +35,7 @@ class TaskSpec:
     agent: str = "opencode"
     check_interval_seconds: int = 300
     initial_prompt: str | None = None
+    auto_accept_permissions: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -48,6 +49,7 @@ class TaskSpec:
             "agent": self.agent,
             "check_interval_seconds": self.check_interval_seconds,
             "initial_prompt": self.initial_prompt,
+            "auto_accept_permissions": self.auto_accept_permissions,
         }
 
     @classmethod
@@ -65,7 +67,24 @@ class TaskSpec:
             agent=str(data.get("agent") or "opencode").strip() or "opencode",
             check_interval_seconds=interval,
             initial_prompt=(str(data["initial_prompt"]).strip() if data.get("initial_prompt") else None),
+            auto_accept_permissions=bool(data.get("auto_accept_permissions", True)),
         )
+
+
+def permission_waiting_summary(pending: list[dict[str, Any]]) -> str:
+    if not pending:
+        return "Waiting for permission approval"
+    first = pending[0]
+    tool = str(first.get("permission") or "tool")
+    patterns = first.get("patterns") or []
+    hint = str(patterns[0]) if patterns else ""
+    base = f"Permission required: {tool}"
+    if hint:
+        base += f" ({hint})"
+    extra = len(pending) - 1
+    if extra > 0:
+        base += f" (+{extra} more)"
+    return base
 
 
 def _parse_steps_and_acceptance(data: dict[str, Any]) -> tuple[list[str], list[list[str]], list[str]]:

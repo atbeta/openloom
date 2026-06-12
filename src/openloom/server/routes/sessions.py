@@ -28,6 +28,31 @@ async def session_diff(client: Any, session_id: str) -> dict[str, Any]:
     return {"diff": diff}
 
 
+async def list_permissions(client: Any, session_id: str | None = None) -> dict[str, Any]:
+    try:
+        permissions = await client.list_pending_permissions(session_id)
+    except Exception as e:  # noqa: BLE001
+        return {"permissions": [], "error": str(e)}
+    return {"permissions": permissions}
+
+
+async def respond_permission(
+    client: Any,
+    session_id: str,
+    permission_id: str,
+    response: str,
+    *,
+    directory: str | None = None,
+) -> dict[str, Any]:
+    await client.respond_permission(
+        session_id,
+        permission_id,
+        response,
+        directory=directory,
+    )
+    return {"ok": True, "sessionId": session_id, "permissionId": permission_id, "response": response}
+
+
 def _title_from_prompt(prompt: str) -> str:
     first = " ".join(prompt.strip().split())
     if not first:

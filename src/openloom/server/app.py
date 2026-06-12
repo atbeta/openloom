@@ -159,6 +159,11 @@ def create_app(
         else:
             raise HTTPException(status_code=400, detail="plan, prompt, or spec is required")
 
+        auto_accept = bool(body["autoAcceptPermissions"]) if "autoAcceptPermissions" in body else True
+        from openloom.runtime.prompts import TaskSpec
+
+        spec = TaskSpec.from_dict({**spec.to_dict(), "auto_accept_permissions": auto_accept})
+
         from pathlib import Path as _P
 
         cwd: str | None = None
@@ -206,6 +211,7 @@ def create_app(
             "name": spec.name,
             "watch": True,
             "sessionId": session_id,
+            "autoAcceptPermissions": spec.auto_accept_permissions,
             "steps": len(spec.steps),
             "acceptance": len(spec.acceptance),
         }
@@ -323,6 +329,28 @@ def create_app(
         @app.get("/api/sessions/{session_id}/diff")
         async def get_diff(session_id: str):
             return await session_routes.session_diff(client, session_id)
+
+        @app.get("/api/permissions")
+        async def list_permissions(sessionId: str | None = Query(default=None)):
+            return await session_routes.list_permissions(client, sessionId)
+
+        @app.post("/api/sessions/{session_id}/permissions/{permission_id}")
+        async def respond_permission(session_id: str, permission_id: str, req: Request):
+            body = await req.json()
+            response = str(body.get("response") or "once")
+            if response not in {"once", "always", "reject"}:
+                raise HTTPException(status_code=400, detail="response must be once, always, or reject")
+            directory = body.get("directory")
+            try:
+                return await session_routes.respond_permission(
+                    client,
+                    session_id,
+                    permission_id,
+                    response,
+                    directory=str(directory) if directory else None,
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise HTTPException(status_code=502, detail=f"opencode: {exc}") from exc
 
         @app.post("/api/sessions/{session_id}/archive")
         async def archive_session(session_id: str):

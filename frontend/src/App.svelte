@@ -11,6 +11,7 @@
     sessionsByDirectory: {},
     archivedSessions: [],
     sessionStatus: {},
+    permissions: [],
     metrics: { running: 0, waiting: 0, failed: 0, completedToday: 0, sessionsBusy: 0, sessionsIdle: 0, sessionsRetry: 0 },
     usage: {
       periods: {
@@ -42,6 +43,22 @@
 
   let taskWorkspace = $state('');
   let taskCheckInterval = $state(5);
+  const AUTO_ACCEPT_PREFS_KEY = 'openloom.prefs.autoAcceptPermissions';
+
+  function loadAutoAcceptPref() {
+    if (typeof localStorage === 'undefined') return true;
+    const raw = localStorage.getItem(AUTO_ACCEPT_PREFS_KEY);
+    if (raw === null) return true;
+    return raw === 'true';
+  }
+
+  function saveAutoAcceptPref(value) {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(AUTO_ACCEPT_PREFS_KEY, value ? 'true' : 'false');
+    }
+  }
+
+  let taskAutoAcceptPermissions = $state(loadAutoAcceptPref());
   let taskPlan = $state({
     title: '',
     goal: '',
@@ -229,6 +246,46 @@
       return status.type || status.status || status.state || 'idle';
     }
     return 'idle';
+  }
+
+  function permissionLabel(perm) {
+    const tool = perm?.permission || 'tool';
+    const patterns = perm?.patterns || [];
+    const hint = patterns[0] ? String(patterns[0]) : '';
+    return hint ? `${tool}: ${hint}` : String(tool);
+  }
+
+  function sessionTitle(sessionId) {
+    const session = state.sessions.find((item) => item.id === sessionId);
+    return session?.title || sessionId || 'Session';
+  }
+
+  function sessionPendingPermissions(sessionId) {
+    return (state.permissions || []).filter((perm) => perm.sessionId === sessionId);
+  }
+
+  let permissionResponding = $state('');
+
+  async function respondPermission(sessionId, permissionId, response) {
+    const key = `${sessionId}:${permissionId}`;
+    permissionResponding = key;
+    try {
+      const res = await fetch(`/api/sessions/${sessionId}/permissions/${permissionId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ response }),
+      });
+      if (!res.ok) throw new Error(await extractError(res));
+      await refresh();
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+    } finally {
+      permissionResponding = '';
+    }
+  }
+
+  function openSessionDrawerForPermission(sessionId) {
+    openSessionDrawer(sessionId, 'messages');
   }
 
   function directoryStatus(sessions) {
@@ -704,7 +761,9 @@
         plan,
         checkIntervalMinutes: Math.max(5, Number(checkIntervalMinutes ?? taskCheckInterval)),
         workspace: (workspace ?? taskWorkspace).trim() || undefined,
+        autoAcceptPermissions: taskAutoAcceptPermissions,
       };
+      saveAutoAcceptPref(taskAutoAcceptPermissions);
       if (resolvedSessionId) body.sessionId = resolvedSessionId;
       const response = await fetch('/api/tasks', {
         method: 'POST',
@@ -892,6 +951,7 @@
   }
 
   function refreshPollDelayMs() {
+    if ((state.permissions || []).length > 0) return 2000;
     const statuses = Object.values(state.sessionStatus || {});
     const hasActive = statuses.some((status) => {
       const value = String(typeof status === 'string' ? status : status?.type || status?.status || '').toLowerCase();
@@ -1006,6 +1066,46 @@
 
     {#if error}
       <div class="error" style="padding: 10px 20px;">{error}</div>
+    {/if}
+
+    {#if (state.permissions || []).length > 0}
+      <div class="permission-banner" role="status">
+        <div class="permission-banner-copy">
+          <strong>{state.permissions.length} permission request{state.permissions.length === 1 ? '' : 's'} waiting</strong>
+          <span class="dim">Review below or open the session drawer to approve.</span>
+        </div>
+      </div>
+      <div class="permission-list-global">
+        {#each state.permissions as perm (perm.id)}
+          <div class="permission-card">
+            <div class="permission-card-main">
+              <span class="permission-card-title">{permissionLabel(perm)}</span>
+              <span class="mono dim permission-card-session">{sessionTitle(perm.sessionId)}</span>
+            </div>
+            <div class="permission-card-actions">
+              <button
+                class="btn btn-ghost btn-sm"
+                type="button"
+                disabled={permissionResponding === `${perm.sessionId}:${perm.id}`}
+                onclick={() => respondPermission(perm.sessionId, perm.id, 'once')}
+              >Once</button>
+              <button
+                class="btn btn-ghost btn-sm"
+                type="button"
+                disabled={permissionResponding === `${perm.sessionId}:${perm.id}`}
+                onclick={() => respondPermission(perm.sessionId, perm.id, 'always')}
+              >Always</button>
+              <button
+                class="btn btn-ghost btn-sm btn-danger"
+                type="button"
+                disabled={permissionResponding === `${perm.sessionId}:${perm.id}`}
+                onclick={() => respondPermission(perm.sessionId, perm.id, 'reject')}
+              >Deny</button>
+              <button class="btn btn-ghost btn-sm" type="button" onclick={() => openSessionDrawerForPermission(perm.sessionId)}>Session</button>
+            </div>
+          </div>
+        {/each}
+      </div>
     {/if}
 
     {#if mainView === 'dashboard'}
@@ -1467,6 +1567,32 @@
       </div>
     </div>
     <div class="dispatch-foot">
+      <div class="composer-auto-accept">
+        <label class="composer-auto-accept-toggle">
+          <input
+            type="checkbox"
+            class="composer-auto-accept-input"
+            bind:checked={taskAutoAcceptPermissions}
+            onchange={() => saveAutoAcceptPref(taskAutoAcceptPermissions)}
+          />
+          <span class="composer-auto-accept-box" aria-hidden="true">
+            {#if taskAutoAcceptPermissions}
+              <Icon name="check" size={10} class="composer-auto-accept-check" />
+            {/if}
+          </span>
+          <span class="composer-auto-accept-title">Auto-accept permissions</span>
+        </label>
+        <button
+          type="button"
+          class="composer-help"
+          aria-label="Auto-accept permissions: approve each request once for this session (same as OpenCode Desktop). Turn off to review manually."
+        >
+          ?
+          <span class="composer-help-tip" role="tooltip">
+            Approve each request once for this session (same as OpenCode Desktop). Turn off to review manually.
+          </span>
+        </button>
+      </div>
       <div class="composer-foot-interval">
         <span class="composer-label">Watch</span>
         <div class="interval-presets composer-interval">
@@ -1550,6 +1676,18 @@
           <div class="meta-row">
             <div class="meta-label">Session</div>
             <div class="meta-value mono">{drawerTask.active_session_id}</div>
+          </div>
+        {/if}
+        {#if drawerTask.status === 'waiting' && drawerTask.active_session_id}
+          <div class="permission-task-hint">
+            <span class="dim">Waiting on OpenCode permission.</span>
+            <button class="btn btn-ghost btn-sm" type="button" onclick={() => viewTaskSession(drawerTask)}>Open session</button>
+          </div>
+        {/if}
+        {#if drawerTask.spec?.auto_accept_permissions === false}
+          <div class="meta-row">
+            <div class="meta-label">Auto-accept</div>
+            <div class="meta-value">Off for this task</div>
           </div>
         {/if}
         <div class="meta-row">
@@ -1661,6 +1799,38 @@
       <button class:active={drawerTab === 'meta'} type="button" onclick={() => (drawerTab = 'meta')}>Meta</button>
     </div>
     <div class="drawer-body">
+      {#if sessionPendingPermissions(drawerSessionId).length > 0}
+        <div class="permission-drawer-block">
+          <div class="permission-drawer-head">Pending permissions</div>
+          {#each sessionPendingPermissions(drawerSessionId) as perm (perm.id)}
+            <div class="permission-card permission-card-drawer">
+              <div class="permission-card-main">
+                <span class="permission-card-title">{permissionLabel(perm)}</span>
+              </div>
+              <div class="permission-card-actions">
+                <button
+                  class="btn btn-ghost btn-sm"
+                  type="button"
+                  disabled={permissionResponding === `${perm.sessionId}:${perm.id}`}
+                  onclick={() => respondPermission(perm.sessionId, perm.id, 'once')}
+                >Once</button>
+                <button
+                  class="btn btn-ghost btn-sm"
+                  type="button"
+                  disabled={permissionResponding === `${perm.sessionId}:${perm.id}`}
+                  onclick={() => respondPermission(perm.sessionId, perm.id, 'always')}
+                >Always</button>
+                <button
+                  class="btn btn-ghost btn-sm btn-danger"
+                  type="button"
+                  disabled={permissionResponding === `${perm.sessionId}:${perm.id}`}
+                  onclick={() => respondPermission(perm.sessionId, perm.id, 'reject')}
+                >Deny</button>
+              </div>
+            </div>
+          {/each}
+        </div>
+      {/if}
       {#if drawerTab === 'usage'}
         {@const usageInfo = sessionUsage(drawerSession)}
         {#if !usageInfo || (usageInfo.totalTokens === 0 && usageInfo.cost === 0)}

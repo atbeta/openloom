@@ -134,6 +134,13 @@ async def full_state(
         recent.seed_from_sessions(session_dirs)
         recent_workspaces = recent.list()
 
+    permissions: list[dict[str, Any]] = []
+    if health.ok:
+        try:
+            permissions = await client.list_pending_permissions()
+        except Exception:
+            permissions = []
+
     return {
         "server": {
             "ok": health.ok, "message": health.message,
@@ -152,6 +159,7 @@ async def full_state(
         ],
         "sessionStatus": session_status,
         "sessionError": session_error,
+        "permissions": permissions,
         "metrics": _status_counts(tasks, session_status),
         "usage": aggregate_usage_periods(sessions, now=time.time()),
         "now": time.time(),

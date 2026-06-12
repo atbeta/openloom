@@ -10,6 +10,7 @@ from urllib.parse import urlencode
 import httpx
 
 from .session_status import BUSY, RETRY, extract_status_type
+from .prompts import permission_waiting_summary
 
 
 PROJECT_CACHE_TTL_SECONDS = 10.0
@@ -414,6 +415,128 @@ class OpenCodeClient:
                 break
             return out
         return out[:MAX_MESSAGES_PER_SESSION]
+
+    @staticmethod
+    def _normalize_permission(item: dict[str, Any]) -> dict[str, Any]:
+        session_id = item.get("sessionID") or item.get("sessionId") or item.get("session_id")
+        perm_id = item.get("id") or item.get("requestID") or item.get("permissionID")
+        patterns = item.get("patterns") or []
+        if not isinstance(patterns, list):
+            patterns = []
+        metadata = item.get("metadata") or {}
+        if not isinstance(metadata, dict):
+            metadata = {}
+        tool = item.get("permission") or item.get("tool") or ""
+        return {
+            "id": perm_id,
+            "sessionId": session_id,
+            "permission": tool,
+            "patterns": patterns,
+            "metadata": metadata,
+        }
+
+    async def list_pending_permissions(
+        self,
+        session_id: str | None = None,
+        *,
+        directory: str | None = None,
+    ) -> list[dict[str, Any]]:
+        params: dict[str, str] = {}
+        if directory:
+            params["directory"] = directory
+        try:
+            data = await self._request_json("GET", "/permission", params=params or None)
+        except OpenCodeError as exc:
+            if exc.status_code in (404, 405):
+                return []
+            raise
+
+        raw: list[Any]
+        if isinstance(data, list):
+            raw = data
+        elif isinstance(data, dict):
+            raw = data.get("data") or data.get("permissions") or data.get("items") or []
+            if not isinstance(raw, list):
+                raw = []
+        else:
+            raw = []
+
+        items = [
+            self._normalize_permission(item)
+            for item in raw
+            if isinstance(item, dict)
+        ]
+        items = [item for item in items if item.get("id")]
+        if session_id:
+            items = [item for item in items if item.get("sessionId") == session_id]
+        return items
+
+    async def respond_permission(
+        self,
+        session_id: str,
+        permission_id: str,
+        response: str = "once",
+        *,
+        directory: str | None = None,
+    ) -> bool:
+        params = {"directory": directory} if directory else None
+        body = {"response": response}
+        try:
+            await self._request_json(
+                "POST",
+                f"/session/{session_id}/permissions/{permission_id}",
+                json=body,
+                params=params,
+            )
+            return True
+        except OpenCodeError:
+            reply_map = {"once": "allow", "always": "always_allow", "reject": "deny"}
+            legacy = reply_map.get(response, "allow")
+            await self._request_json(
+                "POST",
+                f"/permission/{permission_id}/reply",
+                json={"reply": legacy},
+                params=params,
+            )
+            return True
+
+    async def approve_pending_permissions(
+        self,
+        session_id: str,
+        *,
+        response: str = "once",
+        directory: str | None = None,
+    ) -> int:
+        pending = await self.list_pending_permissions(session_id, directory=directory)
+        count = 0
+        for perm in pending:
+            perm_id = perm.get("id")
+            sid = perm.get("sessionId") or session_id
+            if not perm_id or not sid:
+                continue
+            try:
+                await self.respond_permission(sid, str(perm_id), response, directory=directory)
+                count += 1
+            except Exception:
+                continue
+        return count
+
+    async def resolve_session_permissions(
+        self,
+        session_id: str,
+        auto_accept: bool,
+    ) -> dict[str, str] | None:
+        pending = await self.list_pending_permissions(session_id)
+        if not pending:
+            return None
+        if auto_accept:
+            approved = await self.approve_pending_permissions(session_id, response="once")
+            if approved > 0:
+                return {
+                    "status": "running",
+                    "summary": f"Auto-approved {approved} permission request(s)",
+                }
+        return {"status": "waiting", "summary": permission_waiting_summary(pending)}
 
     async def diff(self, session_id: str) -> list[dict[str, Any]]:
         data = await self._request_json("GET", f"/session/{session_id}/diff")
