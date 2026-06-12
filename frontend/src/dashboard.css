@@ -312,28 +312,6 @@
   line-height: 1.4;
 }
 
-.dash-next {
-  margin-top: 20px;
-  padding: 16px;
-  border: 1px dashed var(--border-soft);
-  border-radius: var(--radius-md);
-  background: color-mix(in oklch, var(--fg) 2%, transparent);
-}
-
-.dash-next-label {
-  font-size: 10px;
-  font-weight: 560;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--meta);
-  margin-bottom: 6px;
-}
-
-.dash-next-copy {
-  font-size: 12px;
-  line-height: 1.5;
-}
-
 .dash-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

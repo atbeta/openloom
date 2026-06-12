@@ -1389,13 +1389,6 @@
               {/if}
             </div>
           {/if}
-
-          <div class="dash-next">
-            <div class="dash-next-label">Next up</div>
-            <div class="dash-next-copy dim">
-              Per-call breakdown, subagent rollups, and usage trends will land here.
-            </div>
-          </div>
         {/if}
       </section>
     {:else}
