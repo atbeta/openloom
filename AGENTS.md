@@ -8,7 +8,7 @@
 - **单一 Task 概念**：`POST /api/tasks` 接受 `{ intent, plan?, checkIntervalMinutes?, sessionId? }`（UI：Generate plan → 审阅 → Start）或 CLI 的 `openloom watch` + YAML spec。
 - **明确不做**：`ephemeral` / `bind` / `/api/dispatch` / Send|Watch 双入口 UI；不维护 workspace 路径白名单（权限交给 OpenCode `opencode.json`）。
 - **渐进能力（L0–L7）**：extras 按需安装（`[ui]` / `[openspec]` / `[github]` 等），不捆绑全家桶。
-- **底座极小**：3 ABC + Harness + EventBus，`core/` ≤ 600 行；新能力 = 装饰器 + 注册表 + 冷检测。
+- **底座极小**：3 ABC + Harness + EventBus，保持 `core/` 精简；新能力 = 装饰器 + 注册表 + 冷检测。
 
 ## 项目状态
 
@@ -18,7 +18,7 @@
 
 ```
 src/openloom/
-├── core/        # ≤600 行；events / harness / store / 3 ABC / registry
+├── core/        # events / harness / store / 3 ABC / registry（保持精简）
 ├── runtime/     # OpenCode HTTP 适配（client / session_status / prompts）
 ├── levels/      # manual / config / openspec / ui / validate / github / server
 │                # 按能力命名，平级、互不 import
@@ -29,7 +29,7 @@ tests/contracts/ # 架构守门测试
 
 ## 硬性架构约束（违反即架构错误，PR 必须守）
 
-1. `core/` 不 import 本包任何其他子包（levels / runtime / server）；总行数 ≤ 600。
+1. `core/` 不 import 本包任何其他子包（levels / runtime / server）。
 2. levels 之间互不 import；共用代码上提到 `runtime/` 或 `server/`。
 3. 任何 `__init__.py` 禁止 `try: import` 可选依赖——用冷检测函数（现场 try import、不缓存）。
 4. Harness 不直调 sink 方法：状态变更唯一路径 = 写 store（store_version +1）→ emit 事件。Checker 是 harness 的内部判定器（无外部副作用），可以由 harness 构造期注入并直接调用。

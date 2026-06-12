@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import contextlib
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from openloom import __version__
 from openloom.server.cold import require_fastapi
@@ -46,8 +45,8 @@ def create_app(
         allow_headers=["*"],
     )
 
-    from .routes import tasks as task_routes
     from .routes import sessions as session_routes
+    from .routes import tasks as task_routes
 
     @app.get("/api/tasks")
     async def list_tasks():
@@ -63,6 +62,7 @@ def create_app(
             raise HTTPException(status_code=400, detail="intent is required")
         session_id = body.get("sessionId")
         from pathlib import Path as _P
+
         from openloom.runtime.planner import generate_plan
 
         cwd: str
@@ -273,7 +273,7 @@ def create_app(
     async def list_recent():
         if recent is None:
             return {"workspaces": []}
-        return {"workspaces": recent.list()}
+        return {"workspaces": recent.list_workspaces()}
 
     @app.delete("/api/recent-workspaces")
     async def remove_recent(path: str = Query(...)):
@@ -290,7 +290,7 @@ def create_app(
         if path:
             root_path = _P(path).expanduser().resolve()
         elif recent is not None:
-            existing = recent.list(limit=1)
+            existing = recent.list_workspaces(limit=1)
             root_path = _P(existing[0]).expanduser().resolve() if existing else _P.home().resolve()
         else:
             root_path = _P.home().resolve()

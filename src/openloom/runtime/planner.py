@@ -5,7 +5,12 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from .prompts import TaskSpec, _title_from_prompt, assistant_transcript, normalize_check_interval_seconds
+from .prompts import (
+    TaskSpec,
+    _title_from_prompt,
+    assistant_transcript,
+    normalize_check_interval_seconds,
+)
 
 
 @dataclass
@@ -74,7 +79,6 @@ def _parse_plan_steps(raw_steps: list[Any]) -> list[PlanStep]:
             steps.append(PlanStep(title=title, acceptance=acc))
         return steps
 
-    flat_acceptance: list[str] = []
     for item in raw_steps:
         text = str(item).strip()
         if text:

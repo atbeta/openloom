@@ -124,7 +124,7 @@ The UI static assets are **pre-built inside the wheel** — no Node.js required 
 ## Architecture (short)
 
 ```
-core/      Harness, store, event bus, Source / Checker / Sink ABCs (≤600 lines)
+core/      Harness, store, event bus, Source / Checker / Sink ABCs (keep lean)
 runtime/   OpenCode HTTP client, session status, prompts
 levels/    Progressive capabilities (manual, config, openspec, ui, …)
 server/    FastAPI app + routes + static UI ([ui] extra)

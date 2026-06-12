@@ -10,18 +10,18 @@ async def run_serve(settings: Any) -> None:
     from openloom.server.cold import require_fastapi
     require_fastapi()
 
+    import uvicorn
+
     from openloom.core.events import EventBus
     from openloom.core.harness import HarnessRunner
     from openloom.core.registry import get_checker, get_sink
     from openloom.core.store import Store
-    from openloom.runtime import prompts, session_status as status_mod
-    from openloom.runtime.opencode import OpenCodeClient, format_opencode_unreachable_help
-
     from openloom.levels.server.monitor import SessionMonitor
+    from openloom.runtime import prompts
+    from openloom.runtime import session_status as status_mod
+    from openloom.runtime.opencode import OpenCodeClient, format_opencode_unreachable_help
     from openloom.server.app import create_app
     from openloom.server.recent import RecentWorkspaces
-
-    import uvicorn
 
     store = Store(settings.database_path)
     recent = RecentWorkspaces(settings.database_path.parent / "recent.sqlite3")

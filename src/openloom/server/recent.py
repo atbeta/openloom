@@ -60,7 +60,7 @@ class RecentWorkspaces:
                 raise
         return normalized
 
-    def list(self, limit: int = 12) -> list[str]:
+    def list_workspaces(self, limit: int = 12) -> list[str]:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT path FROM recent_workspaces ORDER BY used_at DESC LIMIT ?",

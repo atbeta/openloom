@@ -4,6 +4,7 @@ import asyncio
 import time
 from typing import Any
 
+from openloom.runtime.prompts import messages_indicate_busy
 from openloom.runtime.session_status import (
     BUSY,
     IDLE,
@@ -12,7 +13,6 @@ from openloom.runtime.session_status import (
     normalize_session_status,
     session_updated_at,
 )
-from openloom.runtime.prompts import messages_indicate_busy
 
 _last_busy_at: dict[str, float] = {}
 BUSY_HOLD_SECONDS = 12

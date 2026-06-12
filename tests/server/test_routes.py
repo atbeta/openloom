@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -99,7 +98,6 @@ def test_post_task_creates_and_records_recent(client: TestClient) -> None:
     assert r.status_code == 200, r.text
     body = r.json()
     assert "taskId" in body
-    tid = body["taskId"]
 
     workspaces = client.get("/api/recent-workspaces").json()["workspaces"]
     assert any("openloom-smoke" in w for w in workspaces)

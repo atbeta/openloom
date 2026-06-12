@@ -19,7 +19,6 @@ def task_detail(store: Any, task_id: str) -> dict[str, Any]:
 
 
 async def event_stream(store: Any, web_sink: Any):
-    import asyncio
 
     from sse_starlette.sse import EventSourceResponse
 
@@ -34,7 +33,7 @@ async def event_stream(store: Any, web_sink: Any):
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=15)
                     yield {"event": "task", "data": json.dumps(event, default=str)}
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     yield {"event": "heartbeat", "data": json.dumps({"store_version": store.store_version})}
         except asyncio.CancelledError:
             pass
@@ -73,7 +72,9 @@ async def full_state(
 ) -> dict[str, Any]:
     """Composite state for the Web UI dashboard (OpenDeck protocol compat)."""
     from openloom.runtime.session_status import (
-        BUSY, is_archived_session, is_visible_session, session_updated_at,
+        is_archived_session,
+        is_visible_session,
+        session_updated_at,
     )
     from openloom.runtime.telemetry import aggregate_usage_periods
 
@@ -125,14 +126,14 @@ async def full_state(
     if unknown_sessions is not None:
         sessions_by_directory["(unknown)"] = unknown_sessions
 
-    recent_workspaces = recent.list() if recent is not None else []
+    recent_workspaces = recent.list_workspaces() if recent is not None else []
     if recent is not None and not recent_workspaces:
         session_dirs = [
             s.get("directory") for s in sessions
             if s.get("directory") and is_visible_session(s)
         ]
         recent.seed_from_sessions(session_dirs)
-        recent_workspaces = recent.list()
+        recent_workspaces = recent.list_workspaces()
 
     permissions: list[dict[str, Any]] = []
     if health.ok:

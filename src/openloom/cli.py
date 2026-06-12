@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import importlib.util
 import sys
 from pathlib import Path
@@ -45,9 +46,10 @@ async def _run_watch_with_ui(
     *,
     store_path: Path,
 ) -> None:
-    from openloom.server.app import create_app
     import uvicorn
+
     from openloom.levels.manual.watch import run_watch
+    from openloom.server.app import create_app
 
     store = Store(store_path)
     bus = EventBus()
@@ -71,7 +73,7 @@ async def _run_watch_with_ui(
     finally:
         server.should_exit = True
         server_task.cancel()
-        with asyncio.suppress(asyncio.CancelledError):
+        with contextlib.suppress(asyncio.CancelledError):
             await server_task
 
 
@@ -188,6 +190,9 @@ def main() -> None:
             print(f"No task found matching '{prefix}'")
             sys.exit(1)
         task = store.get_task(match["id"])
+        if task is None:
+            print(f"No task found matching '{prefix}'")
+            sys.exit(1)
         print(f"Task:  {task['id']} — {task.get('name', '')}")
         print(f"Status: {task.get('status', '')}  Progress: {task.get('progress', 0):.0%}")
         print()

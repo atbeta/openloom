@@ -4,7 +4,7 @@ from typing import Any
 
 from openloom.core.registry import register_source
 from openloom.core.source import TaskSource
-from openloom.runtime.prompts import TaskSpec, load_task_spec, parse_task_spec
+from openloom.runtime.prompts import load_task_spec, parse_task_spec
 
 
 @register_source("manual")

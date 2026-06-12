@@ -15,8 +15,10 @@ def _safe_num(value: Any) -> float:
 
 
 def parse_session_tokens(session: dict[str, Any]) -> dict[str, float]:
-    tokens = session.get("tokens") if isinstance(session.get("tokens"), dict) else {}
-    cache = tokens.get("cache") if isinstance(tokens.get("cache"), dict) else {}
+    raw_tokens = session.get("tokens")
+    tokens: dict[str, Any] = raw_tokens if isinstance(raw_tokens, dict) else {}
+    raw_cache = tokens.get("cache")
+    cache: dict[str, Any] = raw_cache if isinstance(raw_cache, dict) else {}
     return {
         "input": _safe_num(tokens.get("input")),
         "output": _safe_num(tokens.get("output")),
@@ -27,7 +29,8 @@ def parse_session_tokens(session: dict[str, Any]) -> dict[str, float]:
 
 
 def session_model_ref(session: dict[str, Any]) -> tuple[str, str]:
-    model = session.get("model") if isinstance(session.get("model"), dict) else {}
+    raw_model = session.get("model")
+    model: dict[str, Any] = raw_model if isinstance(raw_model, dict) else {}
     provider_id = str(model.get("providerID") or "").strip()
     model_id = str(model.get("id") or model.get("modelID") or "").strip()
     return provider_id, model_id
@@ -140,7 +143,6 @@ def aggregate_session_usage(sessions: list[dict[str, Any]]) -> dict[str, Any]:
 
     total_tokens = sum(totals.values())
     cache_read = totals["cacheRead"]
-    cache_write = totals["cacheWrite"]
     fresh_input = totals["input"]
     cache_efficiency = (
         round(cache_read / (cache_read + fresh_input), 4)

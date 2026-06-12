@@ -5,16 +5,15 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import openloom.levels.manual.checker  # noqa: F401
+import openloom.levels.manual.sink  # noqa: F401
+import openloom.levels.manual.source  # noqa: F401
 from openloom.core.events import EventBus
 from openloom.core.harness import HarnessRunner
 from openloom.core.registry import get_checker, get_sink, get_source
 from openloom.core.store import Store
 from openloom.runtime import prompts, session_status
 from openloom.runtime.opencode import OpenCodeClient, format_opencode_unreachable_help
-
-import openloom.levels.manual.checker  # noqa: F401
-import openloom.levels.manual.sink  # noqa: F401
-import openloom.levels.manual.source  # noqa: F401
 
 
 async def run_watch(

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -9,9 +8,8 @@ from urllib.parse import urlencode
 
 import httpx
 
-from .session_status import BUSY, RETRY, extract_status_type
 from .prompts import permission_waiting_summary
-
+from .session_status import BUSY, RETRY, extract_status_type
 
 PROJECT_CACHE_TTL_SECONDS = 10.0
 MAX_MESSAGES_PER_SESSION = 1000  # backfill ceiling for very long sessions
@@ -358,7 +356,10 @@ class OpenCodeClient:
 
         if not isinstance(data, dict):
             raise RuntimeError("OpenCode returned an unexpected session response")
-        session = data.get("session") if isinstance(data.get("session"), dict) else data
+        raw_session = data.get("session")
+        session: dict[str, Any] = (
+            raw_session if isinstance(raw_session, dict) else data
+        )
         return self._normalize_session(session)
 
     async def send_prompt_async(self, session_id: str, prompt: str, agent: str | None = None) -> None:
