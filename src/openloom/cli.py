@@ -69,6 +69,8 @@ async def _run_watch_with_ui(
         checker=get_checker("string")(),
         prompts=prompts,
         status=session_status,
+        max_task_tokens=settings.max_task_tokens,
+        max_task_runtime_minutes=settings.max_task_runtime_minutes,
     )
 
     app = create_app(

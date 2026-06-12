@@ -10,13 +10,26 @@ from .store import new_task_record
 
 
 class HarnessRunner:
-    def __init__(self, opencode: Any, bus: EventBus, store: Any, checker: Any, prompts: Any, status: Any) -> None:
+    def __init__(
+        self,
+        opencode: Any,
+        bus: EventBus,
+        store: Any,
+        checker: Any,
+        prompts: Any,
+        status: Any,
+        *,
+        max_task_tokens: int | None = None,
+        max_task_runtime_minutes: int | None = None,
+    ) -> None:
         self.opencode = opencode
         self.bus = bus
         self.store = store
         self.checker = checker
         self.prompts = prompts
         self.status = status
+        self.max_task_tokens = max_task_tokens
+        self.max_task_runtime_minutes = max_task_runtime_minutes
 
     def add_task(
         self,
@@ -135,12 +148,14 @@ class HarnessRunner:
         ))
 
     async def _budget_limit_reason(self, task: dict[str, Any], spec: Any) -> str | None:
-        if spec.max_runtime_minutes:
+        max_runtime = spec.max_runtime_minutes or self.max_task_runtime_minutes
+        if max_runtime:
             created = float(task.get("created_at") or time.time())
             elapsed_min = (time.time() - created) / 60.0
-            if elapsed_min >= spec.max_runtime_minutes:
-                return f"Runtime limit reached ({spec.max_runtime_minutes} min)"
-        if not spec.max_tokens:
+            if elapsed_min >= max_runtime:
+                return f"Runtime limit reached ({max_runtime} min)"
+        max_tokens = spec.max_tokens or self.max_task_tokens
+        if not max_tokens:
             return None
         session_ids = task.get("session_ids") or []
         if not session_ids:
@@ -159,8 +174,8 @@ class HarnessRunner:
             session = by_id.get(str(session_id))
             if session is not None:
                 total += self.prompts.session_total_tokens(session)
-        if total >= spec.max_tokens:
-            return f"Token limit reached ({total:,} / {spec.max_tokens:,})"
+        if total >= max_tokens:
+            return f"Token limit reached ({total:,} / {max_tokens:,})"
         return None
 
     async def tick(self) -> None:

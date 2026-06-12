@@ -13,6 +13,8 @@ class Settings:
     database_path: Path
     ui_host: str = "127.0.0.1"
     ui_port: int = 55413
+    max_task_tokens: int | None = None
+    max_task_runtime_minutes: int | None = None
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -27,4 +29,17 @@ class Settings:
             database_path=database,
             ui_host=os.getenv("OPENLOOM_UI_HOST", "127.0.0.1"),
             ui_port=int(os.getenv("OPENLOOM_UI_PORT", "55413")),
+            max_task_tokens=_optional_env_int("OPENLOOM_MAX_TASK_TOKENS"),
+            max_task_runtime_minutes=_optional_env_int("OPENLOOM_MAX_TASK_RUNTIME_MINUTES"),
         )
+
+
+def _optional_env_int(name: str) -> int | None:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value > 0 else None

@@ -61,6 +61,8 @@ async def run_watch(
             checker=checker,
             prompts=prompts,
             status=session_status,
+            max_task_tokens=getattr(settings, "max_task_tokens", None),
+            max_task_runtime_minutes=getattr(settings, "max_task_runtime_minutes", None),
         )
 
     sink_cls = get_sink("console")

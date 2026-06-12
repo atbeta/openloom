@@ -79,6 +79,8 @@ Other optional variables:
 | `OPENLOOM_DATABASE` | `.openloom/openloom.sqlite3` | Task store path |
 | `OPENLOOM_UI_HOST` | `127.0.0.1` | Web UI bind address |
 | `OPENLOOM_UI_PORT` | `55413` | Web UI port |
+| `OPENLOOM_MAX_TASK_TOKENS` | *(unset)* | Optional global token cap per task (OpenCode session stats) |
+| `OPENLOOM_MAX_TASK_RUNTIME_MINUTES` | *(unset)* | Optional global runtime cap per task (minutes since created) |
 
 ### 2. CLI — watch a task spec
 

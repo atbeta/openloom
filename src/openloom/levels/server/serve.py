@@ -59,6 +59,8 @@ async def run_serve(settings: Any) -> None:
         checker=checker,
         prompts=prompts,
         status=status_mod,
+        max_task_tokens=settings.max_task_tokens,
+        max_task_runtime_minutes=settings.max_task_runtime_minutes,
     )
 
     await monitor.refresh()

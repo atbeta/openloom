@@ -63,8 +63,6 @@
 
   let taskWorkspace = $state('');
   let taskCheckInterval = $state(5);
-  let taskMaxTokens = $state('');
-  let taskMaxRuntimeMinutes = $state('');
   const AUTO_ACCEPT_PREFS_KEY = 'openloom.prefs.autoAcceptPermissions';
 
   function loadAutoAcceptPref() {
@@ -886,10 +884,6 @@
       };
       saveAutoAcceptPref(taskAutoAcceptPermissions);
       if (resolvedSessionId) body.sessionId = resolvedSessionId;
-      const maxTokens = Number(taskMaxTokens);
-      if (Number.isFinite(maxTokens) && maxTokens > 0) body.maxTokens = Math.floor(maxTokens);
-      const maxRuntime = Number(taskMaxRuntimeMinutes);
-      if (Number.isFinite(maxRuntime) && maxRuntime > 0) body.maxRuntimeMinutes = Math.floor(maxRuntime);
       const response = await fetch('/api/tasks', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1760,31 +1754,6 @@
             <span class="interval-unit">min</span>
           </div>
         {/if}
-      </div>
-      <div class="composer-foot-limits">
-        <label class="composer-limit">
-          <span class="composer-label">Max tokens</span>
-          <input
-            type="number"
-            min="1"
-            step="1000"
-            placeholder="optional"
-            bind:value={taskMaxTokens}
-            aria-label="Max tokens optional"
-          />
-        </label>
-        <label class="composer-limit">
-          <span class="composer-label">Max runtime</span>
-          <input
-            type="number"
-            min="1"
-            step="5"
-            placeholder="optional"
-            bind:value={taskMaxRuntimeMinutes}
-            aria-label="Max runtime minutes optional"
-          />
-          <span class="interval-unit">min</span>
-        </label>
       </div>
       {#if taskStartSummary}
         <div class="composer-summary dim mono">{taskStartSummary}</div>

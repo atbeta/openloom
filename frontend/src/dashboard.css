@@ -916,24 +916,6 @@ tr.clickable {
   gap: 8px;
 }
 
-.composer-foot-limits {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px 14px;
-  padding: 0 0 10px;
-}
-
-.composer-limit {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
-.composer-limit input {
-  width: 7rem;
-}
-
 .composer-auto-accept {
   display: flex;
   align-items: center;
