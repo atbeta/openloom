@@ -44,7 +44,7 @@
   let taskCheckInterval = $state(0);
   let taskPlan = $state({
     goal: '',
-    steps: [{ title: '', acceptance: [''] }],
+    steps: [{ title: '', acceptance: [] }],
     globalAcceptance: [],
   });
   let taskTarget = $state('workspace');
@@ -549,8 +549,10 @@
     }
   }
 
+  let taskStepExpanded = $state(new Set());
+
   function emptyPlanStep() {
-    return { title: '', acceptance: [''] };
+    return { title: '', acceptance: [] };
   }
 
   function emptyPlan() {
@@ -589,11 +591,43 @@
   function removeStepAcceptance(stepIndex, accIndex) {
     const steps = taskPlan.steps.map((step, i) => {
       if (i !== stepIndex) return step;
-      const acceptance = step.acceptance.filter((_, j) => j !== accIndex);
-      return { ...step, acceptance: acceptance.length ? acceptance : [''] };
+      return { ...step, acceptance: step.acceptance.filter((_, j) => j !== accIndex) };
     });
     taskPlan = { ...taskPlan, steps };
   }
+
+  function toggleStepExpanded(index) {
+    const next = new Set(taskStepExpanded);
+    if (next.has(index)) next.delete(index);
+    else next.add(index);
+    taskStepExpanded = next;
+  }
+
+  function openStepChecks(index) {
+    if (!taskStepExpanded.has(index)) {
+      taskStepExpanded = new Set([...taskStepExpanded, index]);
+    }
+    if (taskPlan.steps[index].acceptance.length === 0) {
+      addStepAcceptance(index);
+    }
+  }
+
+  function stepAcceptanceFilledCount(step) {
+    return step.acceptance.filter((item) => item.trim()).length;
+  }
+
+  const taskIntervalIsCustom = $derived(
+    !intervalPresets.some((preset) => preset.minutes === Number(taskCheckInterval)),
+  );
+
+  const taskStartSummary = $derived.by(() => {
+    const steps = planStepCount(taskPlan);
+    const checks = planAcceptanceCount(taskPlan);
+    const parts = [];
+    if (steps) parts.push(`${steps} step${steps === 1 ? '' : 's'}`);
+    if (checks) parts.push(`${checks} check${checks === 1 ? '' : 's'}`);
+    return parts.join(' · ');
+  });
 
   function addGlobalAcceptance() {
     taskPlan = { ...taskPlan, globalAcceptance: [...taskPlan.globalAcceptance, ''] };
@@ -672,6 +706,9 @@
       if (!response.ok) throw new Error(result.detail || response.statusText);
       selectedTaskId = result.taskId;
       taskPlan = emptyPlan();
+      taskStepExpanded = new Set();
+      taskTarget = 'workspace';
+      selectedSessionId = '';
       openTaskDrawer(result.taskId);
       await refresh();
     } catch (err) {
@@ -1256,105 +1293,141 @@
       <h2>New Task</h2>
     </div>
     <div class="dispatch-body">
-      <div class="dispatch-card">
-        <div class="nav-label">Target</div>
-        <div class="main-tabs dispatch-target-tabs">
-          <button type="button" class="main-tab" class:active={taskTarget === 'workspace'} onclick={() => (taskTarget = 'workspace')}>Workspace</button>
-          <button type="button" class="main-tab" class:active={taskTarget === 'session'} onclick={() => (taskTarget = 'session')}>Session</button>
-        </div>
-        {#if taskTarget === 'workspace'}
-          <div class="field field-last">
-            <label for="task-workspace">Workspace</label>
-            <div class="path-row">
+      <div class="task-composer">
+        <section class="composer-section">
+          <div class="segmented segmented-compact composer-target-tabs">
+            <button type="button" class:active={taskTarget === 'workspace'} onclick={() => (taskTarget = 'workspace')}>Workspace</button>
+            <button type="button" class:active={taskTarget === 'session'} onclick={() => (taskTarget = 'session')}>Session</button>
+          </div>
+          {#if taskTarget === 'workspace'}
+            <div class="path-row composer-path">
               <input id="task-workspace" class="mono" type="text" bind:value={taskWorkspace} placeholder="/path/to/project" />
-              <button class="btn btn-ghost btn-sm path-pick" type="button" title="Choose folder" aria-label="Choose folder" onclick={() => openFolderBrowser(taskWorkspace)}>…</button>
+              <button class="btn btn-ghost btn-sm path-pick" type="button" title="Choose folder" aria-label="Choose folder" onclick={() => openFolderBrowser(taskWorkspace)}>
+                <Icon name="folder" size={14} />
+              </button>
             </div>
-          </div>
-        {:else}
-          <div class="field">
-            <label for="task-project">Project</label>
-            <select id="task-project" value={selectedProjectDir} onchange={(e) => selectProjectDir(e.currentTarget.value)}>
-              {#each sortedDirectories as dir}
-                {@const sessions = state.sessionsByDirectory[dir]}
-                {#if sessions?.length}
-                  <option value={dir}>{projectDirLabel(dir)}</option>
-                {/if}
-              {/each}
-            </select>
-          </div>
-          <div class="field field-last">
-            <label for="task-session">Session</label>
-            <select id="task-session" bind:value={selectedSessionId} disabled={sessionsInSelectedProject.length === 0}>
-              {#each sessionsInSelectedProject as session}
-                <option value={session.id}>{sessionOptionLabel(session)}</option>
-              {/each}
-            </select>
-          </div>
-        {/if}
-      </div>
+            {#if state.recentWorkspaces.length}
+              <div class="composer-recents">
+                {#each state.recentWorkspaces.slice(0, 5) as workspace}
+                  <button
+                    type="button"
+                    class="template-chip"
+                    class:active={taskWorkspace === workspace}
+                    title={workspace}
+                    onclick={() => selectRecentWorkspace(workspace)}
+                  >{projectName(workspace)}</button>
+                {/each}
+              </div>
+            {/if}
+          {:else}
+            <div class="composer-session-fields">
+              <select id="task-project" value={selectedProjectDir} onchange={(e) => selectProjectDir(e.currentTarget.value)}>
+                {#each sortedDirectories as dir}
+                  {@const sessions = state.sessionsByDirectory[dir]}
+                  {#if sessions?.length}
+                    <option value={dir}>{projectDirLabel(dir)}</option>
+                  {/if}
+                {/each}
+              </select>
+              <select id="task-session" bind:value={selectedSessionId} disabled={sessionsInSelectedProject.length === 0}>
+                {#each sessionsInSelectedProject as session}
+                  <option value={session.id}>{sessionOptionLabel(session)}</option>
+                {/each}
+              </select>
+            </div>
+          {/if}
+        </section>
 
-      <div class="dispatch-card dispatch-card-plan">
-        <div class="dispatch-card-head">
-          <div class="nav-label">Plan</div>
-          <span class="dispatch-meta dim mono">{planStepCount(taskPlan)} steps · {planAcceptanceCount(taskPlan)} checks</span>
-        </div>
-        <div class="field">
-          <label for="plan-goal">Goal</label>
-          <textarea id="plan-goal" class="harness-goal" bind:value={taskPlan.goal} placeholder="What should be true when done?"></textarea>
-        </div>
-        <div class="field">
-          <div class="field-head">
-            <span class="field-label">Steps</span>
-            <button class="btn btn-ghost btn-sm" type="button" onclick={addPlanStep}>+ Add step</button>
+        <div class="composer-divider" role="separator"></div>
+
+        <section class="composer-section composer-plan">
+          <textarea
+            id="plan-goal"
+            class="composer-goal"
+            bind:value={taskPlan.goal}
+            placeholder="Goal — what should be true when done?"
+            rows="3"
+          ></textarea>
+
+          <div class="composer-steps-head">
+            <span class="composer-label">Steps</span>
+            <button class="btn btn-ghost btn-sm composer-add" type="button" onclick={addPlanStep}>
+              <Icon name="plus" size={12} />
+              Add
+            </button>
           </div>
-          <div class="plan-step-list">
+
+          <div class="task-step-list">
             {#each taskPlan.steps as step, i}
-              <div class="plan-step-card">
-                <div class="harness-list-row">
-                  <span class="harness-list-index">{i + 1}</span>
-                  <input type="text" bind:value={taskPlan.steps[i].title} placeholder="Describe this step" />
+              {@const expanded = taskStepExpanded.has(i)}
+              {@const checkCount = stepAcceptanceFilledCount(step)}
+              <div class="task-step" class:expanded>
+                <div class="task-step-main">
+                  <span class="task-step-num">{i + 1}</span>
+                  <input
+                    type="text"
+                    bind:value={taskPlan.steps[i].title}
+                    placeholder="Describe this step"
+                    aria-label="Step {i + 1} description"
+                  />
+                  <button
+                    type="button"
+                    class="task-step-checks-btn"
+                    class:active={expanded || checkCount > 0}
+                    aria-expanded={expanded}
+                    onclick={() => (expanded ? toggleStepExpanded(i) : openStepChecks(i))}
+                  >
+                    {#if checkCount}
+                      {checkCount} check{checkCount === 1 ? '' : 's'}
+                    {:else}
+                      Checks
+                    {/if}
+                    <Icon name="chevron-down" size={10} class={`task-step-chevron${expanded ? ' open' : ''}`} />
+                  </button>
                   <button class="list-remove" type="button" aria-label="Remove step" onclick={() => removePlanStep(i)}>
                     <Icon name="x" size={12} />
                   </button>
                 </div>
-                <div class="plan-step-acceptance">
-                  <div class="field-head">
-                    <span class="dim plan-step-label">Step acceptance</span>
-                    <button class="btn btn-ghost btn-sm" type="button" onclick={() => addStepAcceptance(i)}>+ Add</button>
-                  </div>
-                  <div class="harness-list">
+                {#if expanded}
+                  <div class="task-step-checks">
                     {#each step.acceptance as _item, j}
-                      <div class="harness-list-row">
-                        <span class="harness-list-index"><Icon name="check" size={10} /></span>
+                      <div class="task-check-row">
+                        <Icon name="check" size={10} class="task-check-icon" />
                         <input
                           type="text"
                           bind:value={taskPlan.steps[i].acceptance[j]}
-                          placeholder="Done when this step…"
+                          placeholder="Done when…"
+                          aria-label="Step {i + 1} check {j + 1}"
                         />
                         <button
                           class="list-remove"
                           type="button"
-                          aria-label="Remove criterion"
+                          aria-label="Remove check"
                           onclick={() => removeStepAcceptance(i, j)}
                         ><Icon name="x" size={12} /></button>
                       </div>
                     {/each}
+                    <button class="btn btn-ghost btn-sm task-check-add" type="button" onclick={() => addStepAcceptance(i)}>
+                      <Icon name="plus" size={10} />
+                      Add check
+                    </button>
                   </div>
-                </div>
+                {/if}
               </div>
             {/each}
           </div>
-        </div>
-        <div class="field field-last">
-          <div class="field-head">
-            <span class="field-label">Global acceptance <span class="dim">(optional)</span></span>
-            <button class="btn btn-ghost btn-sm" type="button" onclick={addGlobalAcceptance}>+ Add</button>
-          </div>
-          {#if taskPlan.globalAcceptance.length}
-            <div class="harness-list">
+
+          <details class="task-global-checks">
+            <summary>
+              Final checks
+              {#if taskPlan.globalAcceptance.filter((item) => item.trim()).length}
+                <span class="composer-badge">{taskPlan.globalAcceptance.filter((item) => item.trim()).length}</span>
+              {/if}
+            </summary>
+            <div class="task-global-body">
               {#each taskPlan.globalAcceptance as _item, i}
-                <div class="harness-list-row">
-                  <span class="harness-list-index"><Icon name="check" size={10} /></span>
+                <div class="task-check-row">
+                  <Icon name="check" size={10} class="task-check-icon" />
                   <input
                     type="text"
                     bind:value={taskPlan.globalAcceptance[i]}
@@ -1363,37 +1436,51 @@
                   <button
                     class="list-remove"
                     type="button"
-                    aria-label="Remove criterion"
+                    aria-label="Remove check"
                     onclick={() => removeGlobalAcceptance(i)}
                   ><Icon name="x" size={12} /></button>
                 </div>
               {/each}
+              <button class="btn btn-ghost btn-sm task-check-add" type="button" onclick={addGlobalAcceptance}>
+                <Icon name="plus" size={10} />
+                Add check
+              </button>
             </div>
-          {/if}
-        </div>
-      </div>
-
-      <div class="dispatch-card">
-        <div class="nav-label">Check interval</div>
-        <div class="interval-picker dispatch-interval">
-          <div class="interval-presets">
-            {#each intervalPresets as preset}
-              <button
-                type="button"
-                class="interval-preset"
-                class:active={Number(taskCheckInterval) === preset.minutes}
-                onclick={() => (taskCheckInterval = preset.minutes)}
-              >{preset.label}</button>
-            {/each}
-          </div>
-          <div class="interval-custom">
-            <input id="task-interval" type="number" min="0" max="120" bind:value={taskCheckInterval} />
-            <span class="interval-unit">min</span>
-          </div>
-        </div>
+          </details>
+        </section>
       </div>
     </div>
     <div class="dispatch-foot">
+      <div class="composer-foot-interval">
+        <span class="composer-label">Watch</span>
+        <div class="interval-presets composer-interval">
+          {#each intervalPresets as preset}
+            <button
+              type="button"
+              class="interval-preset"
+              class:active={Number(taskCheckInterval) === preset.minutes}
+              onclick={() => (taskCheckInterval = preset.minutes)}
+            >{preset.label}</button>
+          {/each}
+          <button
+            type="button"
+            class="interval-preset"
+            class:active={taskIntervalIsCustom}
+            onclick={() => {
+              if (!taskIntervalIsCustom) taskCheckInterval = 10;
+            }}
+          >Custom</button>
+        </div>
+        {#if taskIntervalIsCustom}
+          <div class="interval-custom composer-interval-custom">
+            <input id="task-interval" type="number" min="1" max="120" bind:value={taskCheckInterval} aria-label="Custom interval minutes" />
+            <span class="interval-unit">min</span>
+          </div>
+        {/if}
+      </div>
+      {#if taskStartSummary}
+        <div class="composer-summary dim mono">{taskStartSummary}</div>
+      {/if}
       <button
         class="btn btn-primary btn-block"
         type="button"

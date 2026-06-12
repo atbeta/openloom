@@ -19,8 +19,12 @@
     <path d="M2.5 4.5h4L7.5 6H13.5v6.5H2.5V4.5z" />
   {:else if name === 'chevron-right'}
     <path d="M6 4.5 10 8l-4 3.5" />
+  {:else if name === 'chevron-down'}
+    <path d="M4.5 6 8 9.5 11.5 6" />
   {:else if name === 'chevron-left'}
     <path d="M10 4.5 6 8l4 3.5" />
+  {:else if name === 'plus'}
+    <path d="M8 3.5v9M3.5 8h9" />
   {:else if name === 'corner-up-left'}
     <path d="M6 3.5H3.5V6M3.5 3.5 9 9" />
   {:else if name === 'refresh'}
