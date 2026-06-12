@@ -62,6 +62,17 @@ class SessionMonitor:
             if last and now - last < BUSY_HOLD_SECONDS:
                 self._status[sid] = BUSY
 
+        # Purge stale status entries for sessions no longer in the list.
+        # Guards against OpenCode server bug where status map retains
+        # entries for deleted sessions (ghost "busy" after SQLite removal).
+        visible_ids = {s["id"] for s in visible}
+        for stale in list(self._status):
+            if stale not in visible_ids:
+                del self._status[stale]
+        for stale in list(_last_busy_at):
+            if stale not in visible_ids:
+                del _last_busy_at[stale]
+
         self._sessions = sorted(visible, key=session_updated_at, reverse=True)
 
         by_dir: dict[str, list[dict[str, Any]]] = {}
