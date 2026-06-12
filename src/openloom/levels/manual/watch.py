@@ -23,6 +23,7 @@ async def run_watch(
     store_path: str | Path | None = None,
     web_sink: Any = None,
     bus: Any = None,
+    harness: Any = None,
 ) -> None:
     source_cls = get_source("manual")
     source = source_cls()
@@ -43,27 +44,28 @@ async def run_watch(
         sys.exit(1)
 
     db_path = Path(store_path) if store_path else settings.database_path
-    store = Store(db_path)
+    store = harness.store if harness is not None else Store(db_path)
     bus = bus if bus is not None else EventBus()
 
     if web_sink is not None:
         bus.subscribe_all(web_sink.on_event)
 
+    if harness is None:
+        checker_cls = get_checker("string")
+        checker = checker_cls()
+
+        harness = HarnessRunner(
+            opencode=client,
+            bus=bus,
+            store=store,
+            checker=checker,
+            prompts=prompts,
+            status=session_status,
+        )
+
     sink_cls = get_sink("console")
     sink = sink_cls()
     bus.subscribe_all(sink.on_event)
-
-    checker_cls = get_checker("string")
-    checker = checker_cls()
-
-    harness = HarnessRunner(
-        opencode=client,
-        bus=bus,
-        store=store,
-        checker=checker,
-        prompts=prompts,
-        status=session_status,
-    )
 
     first_spec = specs[0]
     spec_name = first_spec.get("name", "Untitled")

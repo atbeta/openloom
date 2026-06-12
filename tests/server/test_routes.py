@@ -46,9 +46,11 @@ def client(opencode_running: Any, tmp_path: Path) -> TestClient:
 
     from openloom.config import Settings
     from openloom.core.events import EventBus
+    from openloom.core.harness import HarnessRunner
+    from openloom.core.registry import get_checker, get_sink
     from openloom.core.store import Store
-    from openloom.core.registry import get_sink
     from openloom.levels.server.monitor import SessionMonitor
+    from openloom.runtime import prompts, session_status
     from openloom.runtime.opencode import OpenCodeClient
     from openloom.server.app import create_app
     from openloom.server.recent import RecentWorkspaces
@@ -59,14 +61,25 @@ def client(opencode_running: Any, tmp_path: Path) -> TestClient:
     client_obj = OpenCodeClient(
         settings.opencode_url, settings.opencode_username, settings.opencode_password,
     )
+    bus = EventBus()
     web_sink = get_sink("web")()
+    bus.subscribe_all(web_sink.on_event)
+    checker = get_checker("string")()
+    harness = HarnessRunner(
+        opencode=client_obj,
+        bus=bus,
+        store=store,
+        checker=checker,
+        prompts=prompts,
+        status=session_status,
+    )
 
     def parse_spec(text: str, fmt: str):
         from openloom.runtime.prompts import parse_task_spec
         return parse_task_spec(text, fmt)
 
     app = create_app(
-        harness=None, store=store, bus=EventBus(), web_sink=web_sink,
+        harness=harness, store=store, bus=bus, web_sink=web_sink,
         client=client_obj, monitor=SessionMonitor(client_obj),
         recent=recent, settings=settings,
         parse_spec=parse_spec, pick_folder=None,

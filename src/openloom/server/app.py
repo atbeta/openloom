@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import time
-import uuid
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +46,19 @@ def create_app(
 
     from .routes import sessions as session_routes
     from .routes import tasks as task_routes
+
+    def _require_harness() -> Any:
+        if harness is None:
+            raise HTTPException(status_code=503, detail="Task harness unavailable")
+        return harness
+
+    def _run_task_command(fn: Any, task_id: str) -> dict[str, Any]:
+        try:
+            return fn(task_id)
+        except LookupError:
+            raise HTTPException(status_code=404, detail="Task not found") from None
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/tasks")
     async def list_tasks():
@@ -188,20 +200,12 @@ def create_app(
 
         spec.workspace = cwd
 
-        task_id = f"task_{uuid.uuid4().hex[:12]}"
-        now = time.time()
-        task = {
-            "id": task_id,
-            "name": spec.name,
-            "spec": spec.to_dict(),
-            "workspace": cwd,
-            "status": "pending",
-            "check_interval_seconds": spec.check_interval_seconds,
-            "next_check_at": now,
-            "active_session_id": session_id,
-            "session_ids": [session_id] if session_id else [],
-        }
-        store.create_task(task)
+        runner = _require_harness()
+        task_id = runner.add_task(
+            spec,
+            active_session_id=session_id,
+            session_ids=[session_id] if session_id else None,
+        )
         if recent is not None and not session_id:
             recent.record(cwd)
         return {
@@ -222,29 +226,15 @@ def create_app(
 
     @app.post("/api/tasks/{task_id}/pause")
     async def pause(task_id: str):
-        task = store.get_task(task_id)
-        if not task:
-            raise HTTPException(status_code=404, detail="Task not found")
-        store.update_task(task_id, status="paused", next_check_at=None)
-        return {"ok": True, "taskId": task_id, "status": "paused"}
+        return _run_task_command(_require_harness().pause_task, task_id)
 
     @app.post("/api/tasks/{task_id}/resume")
     async def resume(task_id: str):
-        task = store.get_task(task_id)
-        if not task:
-            raise HTTPException(status_code=404, detail="Task not found")
-        store.update_task(task_id, status="running", next_check_at=time.time())
-        return {"ok": True, "taskId": task_id, "status": "running"}
+        return _run_task_command(_require_harness().resume_task, task_id)
 
     @app.post("/api/tasks/{task_id}/complete")
     async def complete(task_id: str):
-        task = store.get_task(task_id)
-        if not task:
-            raise HTTPException(status_code=404, detail="Task not found")
-        store.update_task(task_id, status="completed", next_check_at=None,
-                          last_summary="Marked complete manually", progress=1.0)
-        store.append_check_log(task_id, status="completed", summary="Marked complete manually")
-        return {"ok": True, "taskId": task_id, "status": "completed"}
+        return _run_task_command(_require_harness().complete_task, task_id)
 
     @app.get("/api/events")
     async def sse_events():
@@ -252,15 +242,11 @@ def create_app(
 
     @app.post("/api/tasks/{task_id}/archive")
     async def archive(task_id: str):
-        return task_routes.archive_task(store, task_id)
+        return _run_task_command(_require_harness().archive_task, task_id)
 
     @app.delete("/api/tasks/{task_id}")
     async def delete_task(task_id: str):
-        result = task_routes.delete_task(store, task_id)
-        if not result.get("ok"):
-            if result.get("error") == "not found":
-                raise HTTPException(status_code=404, detail="Task not found")
-            raise HTTPException(status_code=400, detail=result.get("error", "delete failed"))
+        result = _run_task_command(_require_harness().delete_task, task_id)
         return result
 
     @app.get("/api/state")

@@ -9,6 +9,45 @@ from pathlib import Path
 from typing import Any
 
 
+def new_task_record(
+    *,
+    task_id: str,
+    name: str,
+    spec: dict[str, Any],
+    workspace: str,
+    check_interval_seconds: int,
+    active_session_id: str | None = None,
+    session_ids: list[str] | None = None,
+) -> dict[str, Any]:
+    """Canonical initial task dict — single source for create_task field defaults."""
+    now = time.time()
+    if session_ids is not None:
+        ids = list(session_ids)
+    elif active_session_id:
+        ids = [active_session_id]
+    else:
+        ids = []
+    return {
+        "id": task_id,
+        "name": name,
+        "spec": spec,
+        "workspace": workspace,
+        "status": "pending",
+        "current_step": 0,
+        "completed_steps": [],
+        "idle_checks": 0,
+        "progress": 0.0,
+        "check_interval_seconds": check_interval_seconds,
+        "last_check_at": None,
+        "next_check_at": now,
+        "active_session_id": active_session_id,
+        "session_ids": ids,
+        "last_summary": None,
+        "error": None,
+        "check_log": [],
+    }
+
+
 class Store:
     def __init__(self, path: Path | str) -> None:
         self.path = Path(path)

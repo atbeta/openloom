@@ -48,14 +48,33 @@ async def _run_watch_with_ui(
 ) -> None:
     import uvicorn
 
+    from openloom.core.harness import HarnessRunner
+    from openloom.core.registry import get_checker
     from openloom.levels.manual.watch import run_watch
+    from openloom.runtime import prompts, session_status
+    from openloom.runtime.opencode import OpenCodeClient
     from openloom.server.app import create_app
 
     store = Store(store_path)
     bus = EventBus()
     bus.subscribe_all(web_sink.on_event)
 
-    app = create_app(harness=None, store=store, bus=bus, web_sink=web_sink)
+    client = OpenCodeClient(
+        settings.opencode_url, settings.opencode_username, settings.opencode_password,
+    )
+    harness = HarnessRunner(
+        opencode=client,
+        bus=bus,
+        store=store,
+        checker=get_checker("string")(),
+        prompts=prompts,
+        status=session_status,
+    )
+
+    app = create_app(
+        harness=harness, store=store, bus=bus, web_sink=web_sink,
+        settings=settings, parse_spec=prompts.parse_task_spec,
+    )
     config = uvicorn.Config(
         app, host=settings.ui_host, port=settings.ui_port, log_level="warning"
     )
@@ -69,6 +88,7 @@ async def _run_watch_with_ui(
             store_path=store_path,
             bus=bus,
             web_sink=web_sink,
+            harness=harness,
         )
     finally:
         server.should_exit = True

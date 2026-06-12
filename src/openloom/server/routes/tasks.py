@@ -43,26 +43,6 @@ async def event_stream(store: Any, web_sink: Any):
     return EventSourceResponse(generate())
 
 
-def archive_task(store: Any, task_id: str) -> dict[str, Any]:
-    task = store.get_task(task_id)
-    if not task:
-        return {"ok": False, "error": "not found"}
-    sv = store.update_task(task_id, status="archived", next_check_at=None,
-                           last_summary="Archived manually")
-    store.append_check_log(task_id, status="archived", summary="Archived manually")
-    return {"ok": True, "taskId": task_id, "status": "archived", "store_version": sv}
-
-
-def delete_task(store: Any, task_id: str) -> dict[str, Any]:
-    task = store.get_task(task_id)
-    if not task:
-        return {"ok": False, "error": "not found"}
-    if str(task.get("status", "")).lower() != "archived":
-        return {"ok": False, "error": "only archived tasks can be deleted"}
-    sv = store.delete_task(task_id)
-    return {"ok": True, "taskId": task_id, "store_version": sv}
-
-
 async def full_state(
     client: Any,
     store: Any,

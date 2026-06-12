@@ -6,6 +6,7 @@ from typing import Any
 
 from .checker import CheckResult
 from .events import Event, EventBus, EventType
+from .store import new_task_record
 
 
 class HarnessRunner:
@@ -17,37 +18,113 @@ class HarnessRunner:
         self.prompts = prompts
         self.status = status
 
-    def add_task(self, spec: Any, task_id: str | None = None) -> str:
+    def add_task(
+        self,
+        spec: Any,
+        task_id: str | None = None,
+        *,
+        active_session_id: str | None = None,
+        session_ids: list[str] | None = None,
+    ) -> str:
         if not hasattr(spec, "to_dict"):
             spec = self.prompts.TaskSpec.from_dict(spec)
 
         task_id = task_id or f"task_{uuid.uuid4().hex[:12]}"
-        now = time.time()
-        task = {
-            "id": task_id,
-            "name": spec.name,
-            "spec": spec.to_dict(),
-            "workspace": spec.workspace,
-            "status": "pending",
-            "current_step": 0,
-            "completed_steps": [],
-            "idle_checks": 0,
-            "progress": 0.0,
-            "check_interval_seconds": spec.check_interval_seconds,
-            "last_check_at": None,
-            "next_check_at": now,
-            "active_session_id": None,
-            "session_ids": [],
-            "last_summary": None,
-            "error": None,
-            "check_log": [],
-        }
+        task = new_task_record(
+            task_id=task_id,
+            name=spec.name,
+            spec=spec.to_dict(),
+            workspace=spec.workspace,
+            check_interval_seconds=spec.check_interval_seconds,
+            active_session_id=active_session_id,
+            session_ids=session_ids,
+        )
         result = self.store.create_task(task)
         sv = result.get("store_version", 0)
 
         self.bus.emit(Event(type=EventType.TASK_CREATED, task_id=task_id, store_version=sv,
                             data={"spec": spec.to_dict(), "workspace": spec.workspace}))
         return task_id
+
+    def pause_task(self, task_id: str) -> dict[str, Any]:
+        if not self.store.get_task(task_id):
+            raise LookupError("Task not found")
+        sv = self.store.update_task(task_id, status="paused", next_check_at=None)
+        self.bus.emit(Event(
+            type=EventType.TASK_UPDATED, task_id=task_id, store_version=sv,
+            data={"status": "paused"},
+        ))
+        return {"ok": True, "taskId": task_id, "status": "paused", "store_version": sv}
+
+    def resume_task(self, task_id: str) -> dict[str, Any]:
+        if not self.store.get_task(task_id):
+            raise LookupError("Task not found")
+        sv = self.store.update_task(task_id, status="running", next_check_at=time.time())
+        self.bus.emit(Event(
+            type=EventType.TASK_UPDATED, task_id=task_id, store_version=sv,
+            data={"status": "running"},
+        ))
+        return {"ok": True, "taskId": task_id, "status": "running", "store_version": sv}
+
+    def complete_task(
+        self,
+        task_id: str,
+        *,
+        summary: str = "Marked complete manually",
+    ) -> dict[str, Any]:
+        if not self.store.get_task(task_id):
+            raise LookupError("Task not found")
+        sv = self.store.update_task(
+            task_id,
+            status="completed",
+            next_check_at=None,
+            last_summary=summary,
+            progress=1.0,
+        )
+        self.store.append_check_log(task_id, status="completed", summary=summary)
+        self.bus.emit(Event(
+            type=EventType.TASK_UPDATED, task_id=task_id, store_version=sv,
+            data={"status": "completed", "summary": summary, "progress": 1.0},
+        ))
+        self.bus.emit(Event(
+            type=EventType.TASK_COMPLETED, task_id=task_id, store_version=sv,
+            data={"summary": summary, "progress": 1.0},
+        ))
+        return {"ok": True, "taskId": task_id, "status": "completed", "store_version": sv}
+
+    def archive_task(
+        self,
+        task_id: str,
+        *,
+        summary: str = "Archived manually",
+    ) -> dict[str, Any]:
+        if not self.store.get_task(task_id):
+            raise LookupError("Task not found")
+        sv = self.store.update_task(
+            task_id,
+            status="archived",
+            next_check_at=None,
+            last_summary=summary,
+        )
+        self.store.append_check_log(task_id, status="archived", summary=summary)
+        self.bus.emit(Event(
+            type=EventType.TASK_UPDATED, task_id=task_id, store_version=sv,
+            data={"status": "archived", "summary": summary},
+        ))
+        return {"ok": True, "taskId": task_id, "status": "archived", "store_version": sv}
+
+    def delete_task(self, task_id: str) -> dict[str, Any]:
+        task = self.store.get_task(task_id)
+        if not task:
+            raise LookupError("Task not found")
+        if str(task.get("status", "")).lower() != "archived":
+            raise ValueError("only archived tasks can be deleted")
+        sv = self.store.delete_task(task_id)
+        self.bus.emit(Event(
+            type=EventType.TASK_UPDATED, task_id=task_id, store_version=sv,
+            data={"deleted": True},
+        ))
+        return {"ok": True, "taskId": task_id, "store_version": sv}
 
     async def tick(self) -> None:
         due = self.store.list_due_tasks()
