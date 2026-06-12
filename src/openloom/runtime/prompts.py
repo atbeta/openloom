@@ -325,6 +325,69 @@ Reply with ONE of:
 Proceed autonomously. Do not ask for confirmation."""
 
 
+def build_final_checks_nudge(spec: TaskSpec) -> str:
+    final_block = "\n".join(f"- [ ] {item}" for item in spec.acceptance)
+    return (
+        f'OpenLoom harness check for "{spec.name}".\n\n'
+        "All steps appear done. Confirm each final check:\n"
+        f"{final_block}\n\n"
+        "Reply with TASK COMPLETE when every final check passes."
+    )
+
+
+def _extract_final_checks_section(text: str) -> str:
+    match = re.search(r"final checks(?: \(whole task\))?\s*:\s*(.*)", text, re.I | re.S)
+    if not match:
+        return ""
+    section = match.group(1)
+    section = re.split(
+        r"\n\s*(?:Current focus|Reply with|Proceed autonomously|OpenLoom harness)",
+        section,
+        maxsplit=1,
+        flags=re.I,
+    )[0]
+    return section.strip()
+
+
+def count_global_acceptance_checked(text: str, acceptance: list[str]) -> int:
+    if not acceptance:
+        return 0
+
+    section = _extract_final_checks_section(text)
+    if section:
+        checked = len(re.findall(r"\[[xX]\]", section))
+        return min(checked, len(acceptance))
+
+    count = 0
+    for item in acceptance:
+        criterion = item.strip()
+        if not criterion:
+            continue
+        snippet = re.escape(criterion[:50])
+        if re.search(rf"^\s*[-*]?\s*\[[xX]\][^\n]*{snippet}", text, re.I | re.M):
+            count += 1
+        elif re.search(rf"^\s*[-*]?\s*[^\n]*{snippet}[^\n]*\[[xX]\]", text, re.I | re.M):
+            count += 1
+    return min(count, len(acceptance))
+
+
+def task_is_finished(
+    *,
+    task_complete: bool,
+    step_done: int,
+    acceptance_checked: int,
+    step_count: int,
+    acceptance_count: int,
+) -> bool:
+    all_steps_reported = step_count > 0 and step_done >= step_count
+    has_final = acceptance_count > 0
+    global_ok = not has_final or acceptance_checked >= acceptance_count
+
+    if has_final:
+        return global_ok and (task_complete or all_steps_reported)
+    return task_complete or all_steps_reported
+
+
 def detect_progress(text: str, spec: TaskSpec) -> dict[str, Any]:
     upper = text.upper()
     task_complete = "TASK COMPLETE" in upper
@@ -332,7 +395,7 @@ def detect_progress(text: str, spec: TaskSpec) -> dict[str, Any]:
     for match in re.finditer(r"STEP DONE:\s*(\d+)", text, re.I):
         step_done = max(step_done, int(match.group(1)))
 
-    checked = len(re.findall(r"\[[xX]\]", text))
+    checked = count_global_acceptance_checked(text, spec.acceptance)
     total_acceptance = len(spec.acceptance)
     acceptance_progress = (
         min(1.0, checked / total_acceptance) if total_acceptance else (1.0 if task_complete else 0.0)

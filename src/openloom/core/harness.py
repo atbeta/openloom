@@ -101,10 +101,13 @@ class HarnessRunner:
 
         completed_steps = list(task.get("completed_steps") or [])
         all_steps_reported = len(spec.steps) > 0 and result.step_done >= len(spec.steps)
-        task_finished = (
-            result.task_complete
-            or (spec.acceptance and result.acceptance_checked >= len(spec.acceptance))
-            or all_steps_reported
+        has_final = bool(spec.acceptance)
+        task_finished = self.prompts.task_is_finished(
+            task_complete=result.task_complete,
+            step_done=result.step_done,
+            acceptance_checked=result.acceptance_checked,
+            step_count=len(spec.steps),
+            acceptance_count=len(spec.acceptance),
         )
 
         if is_busy:
@@ -130,6 +133,9 @@ class HarnessRunner:
                     f"Reply with STEP DONE: {current_step + 1} when this step is finished."
                 )
                 summary = f"Auto-continued to step {current_step + 1}"
+            elif has_final and all_steps_reported and result.acceptance_checked < len(spec.acceptance):
+                nudge = self.prompts.build_final_checks_nudge(spec)
+                summary = "Waiting on final checks"
             elif (
                 result.step_done > 0
                 and result.step_done not in completed_steps
