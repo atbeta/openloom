@@ -13,6 +13,7 @@ status / busy-hold entries for any session that no longer appears in
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import pytest
@@ -132,3 +133,98 @@ async def test_refresh_handles_upstream_error_gracefully() -> None:
     await monitor.refresh()
     assert monitor.sessions == []
     assert monitor.status == {}
+
+
+@pytest.mark.asyncio
+async def test_refresh_probes_when_status_map_omits_session() -> None:
+    """OpenCode 1.16.2 only emits /session/status entries while an
+    agent is actively running. A recently-updated session with no
+    status-map entry must be probed via messages() and reported as
+    busy if its latest message shows in-flight work.
+    """
+    busy_message = {
+        "info": {
+            "role": "assistant",
+            "time": {"created": 0},  # no completed key
+            "error": None,
+        },
+        "parts": [],
+    }
+    finished_message = {
+        "info": {
+            "role": "assistant",
+            "time": {"created": 0, "completed": 1.0},
+            "error": None,
+        },
+        "parts": [],
+    }
+
+    class _ProbeClient(_FakeClient):
+        def __init__(self) -> None:
+            super().__init__(
+                sessions=[
+                    _session("ses_active", updated=time.time()),
+                    _session("ses_done", updated=time.time()),
+                ],
+                status={},  # upstream reports nothing for either
+            )
+            self.probed: list[str] = []
+            self.responses = {
+                "ses_active": [busy_message],
+                "ses_done": [finished_message],
+            }
+
+        async def messages(self, session_id: str, limit: int = 20) -> list[dict[str, Any]]:
+            self.probed.append(session_id)
+            return self.responses.get(session_id, [])
+
+    client = _ProbeClient()
+    monitor = SessionMonitor(client)
+    await monitor.refresh()
+
+    # Both recent sessions were probed (neither was in status map).
+    assert set(client.probed) == {"ses_active", "ses_done"}
+    # The active one shows as busy, the completed one as idle.
+    assert monitor.status["ses_active"] == BUSY
+    assert monitor.status["ses_done"] == IDLE
+
+
+@pytest.mark.asyncio
+async def test_refresh_skips_probe_for_old_sessions() -> None:
+    """A session with no status-map entry but old ``updated`` time
+    must NOT be probed every refresh — it would be wasted bandwidth.
+    """
+    class _ProbeClient(_FakeClient):
+        def __init__(self) -> None:
+            super().__init__(
+                sessions=[_session("ses_old", updated=1.0)],
+                status={},
+            )
+            self.probed: list[str] = []
+
+        async def messages(self, session_id: str, limit: int = 20) -> list[dict[str, Any]]:
+            self.probed.append(session_id)
+            return []
+
+    client = _ProbeClient()
+    monitor = SessionMonitor(client)
+    await monitor.refresh()
+    assert client.probed == []
+
+
+@pytest.mark.asyncio
+async def test_probe_failure_does_not_crash_refresh() -> None:
+    """If messages() throws, the session falls back to IDLE."""
+    class _FailingProbeClient(_FakeClient):
+        def __init__(self) -> None:
+            super().__init__(
+                sessions=[_session("ses_x", updated=100.0)],
+                status={},
+            )
+
+        async def messages(self, session_id: str, limit: int = 20) -> list[dict[str, Any]]:
+            raise RuntimeError("upstream down")
+
+    monitor = SessionMonitor(_FailingProbeClient())
+    await monitor.refresh()
+    assert monitor.status.get("ses_x", IDLE) == IDLE

@@ -47,12 +47,26 @@ class SessionMonitor:
         now = time.time()
         visible = [s for s in sessions if is_visible_session(s)]
 
+        # OpenCode 1.16.2 only emits entries in /session/status while a
+        # session is actively running. Once an agent goes idle, the
+        # status map entry disappears — we must probe messages for
+        # recent sessions to tell "agent is genuinely idle" from
+        # "server never reported". Probe only recent sessions to keep
+        # the dashboard poll cheap.
+        recent_window = 60.0
+        to_probe: list[dict[str, Any]] = [
+            s for s in visible
+            if s["id"] not in raw_status
+            and session_updated_at(s) >= now - recent_window
+        ]
+        if to_probe:
+            await self._probe_busy_inplace(to_probe, now)
+
         for session in visible:
             sid = session["id"]
             raw = raw_status.get(sid)
             status = normalize_session_status(raw) or IDLE
-            updated = session_updated_at(session)
-            if updated > 0 and self._status.get(sid) != status:
+            if self._status.get(sid) != status:
                 self._status[sid] = status
                 if status in (BUSY, RETRY):
                     _last_busy_at[sid] = now
@@ -87,15 +101,18 @@ class SessionMonitor:
         )
         self._by_directory = dict(ordered)
 
-    async def probe_busy(self, limit: int = 12) -> dict[str, bool]:
-        now = time.time()
-        recent = [
-            s for s in self._sessions
-            if is_visible_session(s) and session_updated_at(s) >= now - 600
-        ]
-        recent.sort(key=session_updated_at, reverse=True)
-        recent = recent[:limit]
-
+    async def _probe_busy_inplace(
+        self, sessions: list[dict[str, Any]], now: float,
+    ) -> None:
+        """For each session whose status is unknown, walk the latest
+        message to detect in-flight agent work. The upstream
+        /session/status endpoint only emits an entry while the agent
+        is actively responding; once it goes idle the entry vanishes
+        and we would otherwise show "idle" forever. This probe fills
+        that gap using the same messages_indicate_busy() helper the
+        router uses, and stamps _last_busy_at so the 12s hold keeps
+        the row sticky.
+        """
         async def probe(session: dict[str, Any]) -> tuple[str, bool]:
             sid = session["id"]
             try:
@@ -104,10 +121,10 @@ class SessionMonitor:
                 return sid, False
             return sid, messages_indicate_busy(msgs)
 
-        results = await asyncio.gather(*(probe(s) for s in recent))
-        result_map = dict(results)
-        for sid, busy in result_map.items():
-            self._status[sid] = BUSY if busy else (self._status.get(sid, IDLE))
+        results = await asyncio.gather(*(probe(s) for s in sessions))
+        for sid, busy in results:
             if busy:
+                self._status[sid] = BUSY
                 _last_busy_at[sid] = now
-        return result_map
+            # If not busy we leave the row as IDLE; refresh() will
+            # pick that up next pass without polluting the cache.
