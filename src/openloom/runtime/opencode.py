@@ -15,6 +15,61 @@ from .session_status import BUSY, RETRY, extract_status_type
 PROJECT_CACHE_TTL_SECONDS = 10.0
 
 
+def _aggregate_message_stats(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    """Sum tokens / cost across all messages in a session.
+
+    Tokens live at info.tokens on each message; cost at info.cost.
+    OpenCode has been emitting these since 1.14.x. We sum totals
+    (input / output / reasoning / cache.read / cache.write) and add
+    the cost values. Returns ``{"tokens": {...}, "cost": float}``;
+    either may be ``None`` if the input had nothing to aggregate.
+    """
+    total_tokens: dict[str, float] = {
+        "total": 0, "input": 0, "output": 0, "reasoning": 0,
+        "cache.read": 0, "cache.write": 0,
+    }
+    cost = 0.0
+    saw_any = False
+
+    for message in messages or []:
+        info = message.get("info")
+        if not isinstance(info, dict):
+            continue
+        tokens = info.get("tokens")
+        if isinstance(tokens, dict):
+            for key in ("total", "input", "output", "reasoning"):
+                value = tokens.get(key)
+                if isinstance(value, (int, float)):
+                    total_tokens[key] += value
+            cache = tokens.get("cache")
+            if isinstance(cache, dict):
+                for sub in ("read", "write"):
+                    value = cache.get(sub)
+                    if isinstance(value, (int, float)):
+                        total_tokens[f"cache.{sub}"] += value
+            saw_any = True
+        cost_value = info.get("cost")
+        if isinstance(cost_value, (int, float)):
+            cost += cost_value
+            saw_any = True
+
+    if not saw_any:
+        return {"tokens": None, "cost": None}
+    return {
+        "tokens": {
+            "total": total_tokens["total"],
+            "input": total_tokens["input"],
+            "output": total_tokens["output"],
+            "reasoning": total_tokens["reasoning"],
+            "cache": {
+                "read": total_tokens["cache.read"],
+                "write": total_tokens["cache.write"],
+            },
+        },
+        "cost": cost,
+    }
+
+
 class OpenCodeError(Exception):
     def __init__(self, status_code: int, message: str) -> None:
         super().__init__(message)
@@ -125,11 +180,36 @@ class OpenCodeClient:
                 if sid:
                     seen.add(sid)
                 result.append(session)
+        await self._populate_session_stats(result)
         return result
 
     async def _list_sessions_default(self) -> list[dict[str, Any]]:
         data = await self._request_json("GET", "/session", params={"limit": 500})
-        return [self._normalize_session(item) for item in self._extract_sessions(data)]
+        sessions = [self._normalize_session(item) for item in self._extract_sessions(data)]
+        await self._populate_session_stats(sessions)
+        return sessions
+
+    async def _populate_session_stats(self, sessions: list[dict[str, Any]]) -> None:
+        """Backfill tokens / cost from per-message payload for older
+        OpenCode (1.14.x) servers that omit those fields in the session
+        list response. Runs in parallel; only touches sessions that
+        already lack the fields.
+        """
+        targets = [s for s in sessions if s.get("id") and not s.get("tokens")]
+
+        async def fill(session: dict[str, Any]) -> None:
+            try:
+                messages = await self.messages(session["id"], limit=100)
+            except Exception:
+                return
+            agg = _aggregate_message_stats(messages)
+            if agg["tokens"]:
+                session["tokens"] = agg["tokens"]
+            if agg["cost"] is not None:
+                session["cost"] = agg["cost"]
+
+        if targets:
+            await asyncio.gather(*(fill(s) for s in targets))
 
     @staticmethod
     def _extract_sessions(data: Any) -> list[dict[str, Any]]:
