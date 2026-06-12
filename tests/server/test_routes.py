@@ -302,7 +302,9 @@ def test_recent_workspaces_round_trip(client: TestClient) -> None:
         "format": "yaml",
         "spec": "name: t\nworkspace: /tmp/openloom-smoke\nsteps:\n  - one\n",
     })
-    r = client.delete("/api/recent-workspaces", params={"path": "/private/tmp/openloom-smoke"})
+    workspaces = client.get("/api/recent-workspaces").json()["workspaces"]
+    assert len(workspaces) == 1
+    r = client.delete("/api/recent-workspaces", params={"path": workspaces[0]})
     assert r.json()["removed"] is True
     assert client.get("/api/recent-workspaces").json()["workspaces"] == []
 
