@@ -629,6 +629,29 @@ tr.clickable {
   margin: 0 -2px;
 }
 
+.composer-title {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 12px;
+  color: var(--fg);
+  font-size: 13px;
+  font-weight: 560;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+
+.composer-title:focus {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--accent) 18%, transparent);
+}
+
+.composer-title::placeholder {
+  color: var(--meta);
+  font-weight: 400;
+}
+
 .composer-goal {
   width: 100%;
   min-height: 72px;

@@ -43,6 +43,7 @@
   let taskWorkspace = $state('');
   let taskCheckInterval = $state(0);
   let taskPlan = $state({
+    title: '',
     goal: '',
     steps: [{ title: '', acceptance: [] }],
     globalAcceptance: [],
@@ -557,6 +558,7 @@
 
   function emptyPlan() {
     return {
+      title: '',
       goal: '',
       steps: [emptyPlanStep()],
       globalAcceptance: [],
@@ -566,10 +568,18 @@
   function derivePlanName(plan) {
     const goalLine = plan.goal.trim().split('\n').map((line) => line.trim()).find(Boolean) || '';
     if (goalLine) {
-      return goalLine.length > 60 ? `${goalLine.slice(0, 57)}…` : goalLine;
+      return goalLine.length > 60 ? `${goalLine.slice(0, 59)}…` : goalLine;
     }
     const firstStep = plan.steps.find((step) => step.title.trim())?.title.trim() || '';
-    return firstStep || 'Untitled task';
+    if (firstStep) {
+      return firstStep.length > 60 ? `${firstStep.slice(0, 59)}…` : firstStep;
+    }
+    return 'Untitled task';
+  }
+
+  function resolvePlanName(plan) {
+    const explicit = plan.title?.trim() || '';
+    return explicit || derivePlanName(plan);
   }
 
   function addPlanStep() {
@@ -660,7 +670,7 @@
         acceptance: step.acceptance.map((item) => item.trim()).filter(Boolean),
       }))
       .filter((step) => step.title);
-    const name = derivePlanName(plan);
+    const name = resolvePlanName(plan);
     const goal = plan.goal.trim() || name;
     return {
       name,
@@ -1191,7 +1201,7 @@
               <tbody>
                 {#each activeTasks as task}
                   <tr class:highlight={drawerTaskId === task.id} onclick={() => openTaskDrawer(task.id)}>
-                    <td><span class="task-title">{task.name}</span></td>
+                    <td><span class="task-title" title={task.name}>{task.name}</span></td>
                     <td class="mono">{taskIntervalLabel(task)}</td>
                     <td class="mono">{stepProgressLabel(task)}</td>
                     <td class="mono">{shortPath(task.workspace)}</td>
@@ -1214,7 +1224,7 @@
               <tbody>
                 {#each archivedTasks as task}
                   <tr class:highlight={drawerTaskId === task.id} onclick={() => openTaskDrawer(task.id)}>
-                    <td><span class="task-title">{task.name}</span></td>
+                    <td><span class="task-title" title={task.name}>{task.name}</span></td>
                     <td class="mono">{taskIntervalLabel(task)}</td>
                     <td class="mono">{shortPath(task.workspace)}</td>
                     <td><span class={`pill ${statusClass(task.status)}`}><span class="pill-dot"></span>{task.status}</span></td>
@@ -1341,6 +1351,13 @@
         <div class="composer-divider" role="separator"></div>
 
         <section class="composer-section composer-plan">
+          <input
+            id="plan-title"
+            class="composer-title"
+            type="text"
+            bind:value={taskPlan.title}
+            placeholder="Title (optional — list label; falls back to goal)"
+          />
           <textarea
             id="plan-goal"
             class="composer-goal"

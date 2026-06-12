@@ -490,6 +490,11 @@ tr.highlight td {
 }
 
 .task-title {
+  display: block;
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   color: var(--fg);
   font-weight: 560;
 }
