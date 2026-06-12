@@ -40,7 +40,6 @@ async def dispatch_prompt(
     request: dict[str, Any],
     *,
     recent: Any = None,
-    settings: Any = None,
 ) -> dict[str, Any]:
     """One-shot prompt dispatch — OpenCode API only, no harness task."""
     prompt = str(request.get("prompt") or "").strip()
@@ -59,8 +58,6 @@ async def dispatch_prompt(
         if not raw:
             return {"ok": False, "error": "workspace cwd is required"}
         cwd = str(Path(str(raw)).expanduser().resolve())
-        if settings is not None and not settings.is_allowed_workspace(cwd):
-            return {"ok": False, "error": "Workspace not allowed"}
         title = _title_from_prompt(prompt)
         session = await client.create_session(cwd=cwd, title=title)
         session_id = session["id"]
@@ -72,8 +69,6 @@ async def dispatch_prompt(
             return {"ok": False, "error": "sessionId is required"}
     elif request.get("cwd"):
         cwd = str(Path(str(request["cwd"])).expanduser().resolve())
-        if settings is not None and not settings.is_allowed_workspace(cwd):
-            return {"ok": False, "error": "Workspace not allowed"}
         session = await client.create_session(cwd=cwd, title=_title_from_prompt(prompt))
         session_id = session["id"]
         if recent is not None:

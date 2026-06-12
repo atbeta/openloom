@@ -40,8 +40,6 @@ def opencode_running() -> Any:
 @pytest.fixture
 def client(opencode_running: Any, tmp_path: Path) -> TestClient:
     os.environ["OPENLOOM_DATABASE"] = str(tmp_path / "store.sqlite3")
-    os.environ["OPENLOOM_ALLOWED_ROOTS"] = str(tmp_path)
-    os.environ["OPENLOOM_STRICT_ROOTS"] = "false"
 
     import openloom.levels.manual.checker  # noqa
     import openloom.levels.manual.sink  # noqa

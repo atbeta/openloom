@@ -9,14 +9,13 @@ from .events import Event, EventBus, EventType
 
 
 class HarnessRunner:
-    def __init__(self, opencode: Any, bus: EventBus, store: Any, checker: Any, prompts: Any, status: Any, allowed_workspace: Any = None) -> None:
+    def __init__(self, opencode: Any, bus: EventBus, store: Any, checker: Any, prompts: Any, status: Any) -> None:
         self.opencode = opencode
         self.bus = bus
         self.store = store
         self.checker = checker
         self.prompts = prompts
         self.status = status
-        self.allowed_workspace = allowed_workspace or (lambda _: True)
 
     def add_task(self, spec: Any, task_id: str | None = None) -> str:
         if not hasattr(spec, "to_dict"):
@@ -238,11 +237,9 @@ class HarnessRunner:
             if not match:
                 raise ValueError(f"Session {session_id} no longer exists")
             directory = match.get("directory") or spec.workspace
-            if directory and self.allowed_workspace(directory):
+            if directory:
                 spec = self.prompts.TaskSpec.from_dict({**spec.to_dict(), "workspace": directory})
         else:
-            if not self.allowed_workspace(spec.workspace):
-                raise ValueError("Workspace is outside allowed roots")
             session = await self.opencode.create_session(cwd=spec.workspace, title=spec.name)
             session_id = session["id"]
 

@@ -60,7 +60,6 @@ async def run_watch(
         checker=checker,
         prompts=prompts,
         status=session_status,
-        allowed_workspace=settings.is_allowed_workspace,
     )
 
     first_spec = specs[0]

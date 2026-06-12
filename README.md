@@ -44,22 +44,13 @@ export OPENLOOM_OPENCODE_USERNAME=opencode
 export OPENLOOM_OPENCODE_PASSWORD=your-password
 ```
 
-Optional: restrict which workspace paths tasks may use:
-
-```bash
-export OPENLOOM_ALLOWED_ROOTS=/Users/you/Projects
-```
-
 Windows (PowerShell):
 
 ```powershell
 $env:OPENLOOM_OPENCODE_URL = "http://127.0.0.1:14096"
 $env:OPENLOOM_OPENCODE_USERNAME = "opencode"
 $env:OPENLOOM_OPENCODE_PASSWORD = "your-password"
-$env:OPENLOOM_ALLOWED_ROOTS = "C:\Projects;D:\Work"
 ```
-
-On Windows, use `;` (semicolon) to separate multiple allowed roots — the drive colon in `C:\` is handled correctly.
 
 See [`.env.example`](.env.example) for all variables.
 

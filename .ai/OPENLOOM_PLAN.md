@@ -200,7 +200,7 @@ openloom/
    - Session 监控（按项目分组、busy/idle/retry）
    - Dispatch（一次性派发）
    - Session 抽屉（消息 / diff / 元数据）
-   - Recent Workspaces、workspace 白名单（`OPENLOOM_ALLOWED_ROOTS`）
+   - Recent Workspaces
 3. **前端升级为 Svelte 版**：deck 的 `App.svelte` 迁移过来，对接 M3 定义的 /api/tasks + SSE 协议；按 `registry.list_all()` 渲染能力按钮（未装的 level 显示 "需 pip install openloom[X]"，先 render 再 disabled）。
 4. **extras**：`openloom[server]`。
 

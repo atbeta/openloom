@@ -144,8 +144,6 @@ def main() -> None:
                 opencode_username=settings.opencode_username,
                 opencode_password=settings.opencode_password,
                 database_path=settings.database_path,
-                allowed_roots=settings.allowed_roots,
-                strict_roots=settings.strict_roots,
                 ui_host=args.host,
                 ui_port=args.port or settings.ui_port,
             )
@@ -155,8 +153,6 @@ def main() -> None:
                 opencode_username=settings.opencode_username,
                 opencode_password=settings.opencode_password,
                 database_path=settings.database_path,
-                allowed_roots=settings.allowed_roots,
-                strict_roots=settings.strict_roots,
                 ui_port=args.port,
             )
 

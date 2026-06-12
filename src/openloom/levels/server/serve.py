@@ -52,7 +52,6 @@ async def run_serve(settings: Any) -> None:
         checker=checker,
         prompts=prompts,
         status=status_mod,
-        allowed_workspace=settings.is_allowed_workspace,
     )
 
     await monitor.refresh()

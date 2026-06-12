@@ -84,9 +84,6 @@ def create_app(
                 raise HTTPException(status_code=400, detail="workspace is required")
             cwd = str(_P(workspace).expanduser().resolve())
 
-        if not settings.is_allowed_workspace(cwd):
-            raise HTTPException(status_code=400, detail="Workspace not allowed")
-
         agent = str(body.get("agent") or "opencode")
         agent_name = None if agent == "opencode" else agent
         try:
@@ -184,8 +181,6 @@ def create_app(
                 raise HTTPException(status_code=400, detail="workspace is required")
             cwd = str(_P(spec.workspace).expanduser().resolve())
 
-        if not settings.is_allowed_workspace(cwd):
-            raise HTTPException(status_code=400, detail="Workspace not allowed")
         spec.workspace = cwd
 
         task_id = f"task_{uuid.uuid4().hex[:12]}"
@@ -293,8 +288,6 @@ def create_app(
             root_path = _P(existing[0]).expanduser().resolve() if existing else _P.home().resolve()
         else:
             root_path = _P.home().resolve()
-        if not settings.is_allowed_workspace(str(root_path)):
-            raise HTTPException(status_code=400, detail="Path is not accessible")
         if not root_path.exists() or not root_path.is_dir():
             raise HTTPException(status_code=404, detail="Directory not found")
         children = []
@@ -314,8 +307,6 @@ def create_app(
         picked = await asyncio.to_thread(pick_folder)
         if not picked:
             return {"ok": False, "cancelled": True}
-        if settings is not None and not settings.is_allowed_workspace(picked):
-            raise HTTPException(status_code=400, detail="Workspace not allowed")
         if recent is not None:
             recent.record(picked)
         return {"ok": True, "path": picked}
