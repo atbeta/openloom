@@ -36,9 +36,20 @@ There is intentionally **no `[all]`** extra — pick capabilities as you grow.
 
 ## Quick start
 
-### 1. Configure OpenCode connection
+### 0. Start OpenCode
 
-Most local setups need no env vars — OpenLoom defaults to `http://127.0.0.1:4096` with no HTTP auth (same as `opencode serve` without `OPENCODE_SERVER_PASSWORD`).
+OpenLoom talks to OpenCode over HTTP. In a separate terminal:
+
+```bash
+opencode serve
+# or launch the OpenCode app/TUI (it also exposes the API on port 4096)
+```
+
+If OpenCode is not running, `openloom watch` exits with setup hints; `openloom serve` starts the dashboard but session features stay offline until OpenCode is up.
+
+### 1. Configure OpenCode connection (optional)
+
+Most local setups need **no env vars** — OpenLoom defaults to `http://127.0.0.1:4096` with no HTTP auth (same as `opencode serve` without `OPENCODE_SERVER_PASSWORD`).
 
 If your OpenCode server uses HTTP basic auth:
 
@@ -56,7 +67,16 @@ $env:OPENLOOM_OPENCODE_USERNAME = "opencode"
 $env:OPENLOOM_OPENCODE_PASSWORD = "your-password"
 ```
 
-See [`.env.example`](.env.example) for all variables.
+Other optional variables:
+
+| Variable | Default | Purpose |
+|----------|---------|---------|
+| `OPENLOOM_OPENCODE_URL` | `http://127.0.0.1:4096` | OpenCode HTTP base URL |
+| `OPENLOOM_OPENCODE_USERNAME` | `opencode` | Basic auth user (only if OpenCode has a server password) |
+| `OPENLOOM_OPENCODE_PASSWORD` | *(empty)* | Basic auth password |
+| `OPENLOOM_DATABASE` | `.openloom/openloom.sqlite3` | Task store path |
+| `OPENLOOM_UI_HOST` | `127.0.0.1` | Web UI bind address |
+| `OPENLOOM_UI_PORT` | `55413` | Web UI port |
 
 ### 2. CLI — watch a task spec
 
@@ -91,9 +111,11 @@ openloom serve --host 127.0.0.1 --port 55413
 
 Open `http://127.0.0.1:55413` for:
 
-- **Dashboard** — session token usage, by-model breakdown, period summaries
+- **Dashboard** — session token usage, by-model breakdown, period summaries (Today / week / month / total)
 - **Activity** — tasks, archived tasks, sessions by workspace
 - **New Task** — plan with goal/steps/acceptance, attach to workspace or existing session
+- **Permissions** — pending tool approvals with Once / Always / Deny (optional auto-accept, OpenCode Desktop–compatible)
+- **Session drawer** — messages, usage, diff, metadata per session
 
 The UI static assets are **pre-built inside the wheel** — no Node.js required at install time.
 
