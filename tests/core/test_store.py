@@ -80,6 +80,12 @@ def test_append_check_log_bumps_version(tmp_path: Path) -> None:
     assert task["last_summary"] == "started"
 
 
+def test_store_accepts_str_path(tmp_path: Path) -> None:
+    store = Store(str(tmp_path / "store.sqlite3"))
+    assert store.path == tmp_path / "store.sqlite3"
+    assert store.store_version == 0
+
+
 def test_empty_update_returns_current_version(tmp_path: Path) -> None:
     store = _make_store(tmp_path)
     assert store.update_task("nonexistent") == 0

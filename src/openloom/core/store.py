@@ -9,8 +9,8 @@ from typing import Any, Callable
 
 
 class Store:
-    def __init__(self, path: Path) -> None:
-        self.path = path
+    def __init__(self, path: Path | str) -> None:
+        self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
         self._init()

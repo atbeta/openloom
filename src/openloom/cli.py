@@ -4,6 +4,7 @@ import argparse
 import asyncio
 import importlib.util
 import sys
+from pathlib import Path
 from typing import Any
 
 from openloom.config import Settings
@@ -42,7 +43,7 @@ async def _run_watch_with_ui(
     settings: Settings,
     web_sink: Any,
     *,
-    store_path: str,
+    store_path: Path,
 ) -> None:
     from openloom.server.app import create_app
     import uvicorn
@@ -111,7 +112,7 @@ def main() -> None:
             sys.exit(1)
 
     elif args.command == "watch":
-        store_path = str(settings.database_path)
+        store_path = settings.database_path
         if args.ui:
             try:
                 _require_web_extras()

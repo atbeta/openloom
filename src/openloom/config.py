@@ -7,7 +7,7 @@ from pathlib import Path
 
 def _split_paths(value: str) -> list[Path]:
     paths: list[Path] = []
-    for item in value.split(":"):
+    for item in value.split(os.pathsep):
         item = item.strip()
         if not item:
             continue
