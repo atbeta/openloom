@@ -43,6 +43,7 @@ tests/contracts/ # 架构守门测试
 - 测试 `pytest`，HTTP mock 用 `respx`；lint 用 `ruff` + `mypy`。
 - 运行依赖外部 OpenCode Server（默认 `http://127.0.0.1:4096`；仅当 OpenCode 启用了 `OPENCODE_SERVER_PASSWORD` 时才需配置 `OPENLOOM_OPENCODE_*` 凭据，绝不写入代码或提交 git）。
 - 发版前：`cd frontend && npm run build`，再 `uv build`；`static/app/` 预构建产物需提交进 wheel。
+- CI（GitHub Actions）：`ci.yml` 跑 pytest + import-linter + frontend 构建校验 + wheel；`lint.yml` 跑 ruff/mypy（暂 `continue-on-error`）；tag `v*` 触发 `release.yml` 发 PyPI（需配置 Trusted Publishing）。
 
 ## 提交信息规范
 

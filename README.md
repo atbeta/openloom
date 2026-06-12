@@ -1,5 +1,7 @@
 # OpenLoom
 
+[![CI](https://github.com/atbeta/openloom/actions/workflows/ci.yml/badge.svg)](https://github.com/atbeta/openloom/actions/workflows/ci.yml)
+
 **Don't trust the agent's word — trust the file system.**
 
 OpenLoom is a lightweight harness and observer for [OpenCode](https://github.com/opencode-ai/opencode). It schedules tasks, watches sessions, and verifies completion with file-system checks instead of model self-reports.
@@ -28,7 +30,7 @@ Optional extras (install only what you need):
 |-------|---------|
 | `ui` | Web dashboard (`openloom serve`, `openloom watch --ui`) |
 | `server` | Same as `ui` (team server mode alias) |
-| `openspec` | OpenSpec checkbox completion checks |
+| `openspec` | OpenSpec checkbox completion checks (cold-detected; no extra deps yet) |
 | `github` | GitHub integration |
 | `validate` | Pre-archive validation hooks (uses your project's pytest/mypy) |
 
