@@ -18,6 +18,8 @@ venv/
 # IDE
 .idea/
 .vscode/
+.qoder/
+.playwright-mcp/
 *.swp
 *.swo
 

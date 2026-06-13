@@ -196,8 +196,14 @@
       { key: 'cacheRead', label: 'Cache read', value: t.cacheRead || 0, tone: 'cache-read' },
       { key: 'cacheWrite', label: 'Cache write', value: t.cacheWrite || 0, tone: 'cache-write' },
     ];
-    const total = parts.reduce((sum, part) => sum + part.value, 0) || 1;
-    return parts.map((part) => ({ ...part, pct: Math.max(0, (part.value / total) * 100) }));
+    const total = parts.reduce((sum, part) => sum + part.value, 0);
+    return {
+      hasData: total > 0,
+      parts: parts.map((part) => ({
+        ...part,
+        pct: total > 0 ? Math.max(0, (part.value / total) * 100) : 0,
+      })),
+    };
   });
 
   const sessionsInSelectedProject = $derived(
@@ -348,7 +354,7 @@
     const n = Number(value) || 0;
     if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
     if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-    return String(n);
+    return n.toLocaleString('en-US');
   }
 
   function formatPercent(value) {
@@ -1131,10 +1137,10 @@
         {#if state.recentWorkspaces.length === 0}
           <div class="dim empty-mini">Used paths will appear here.</div>
         {:else}
-          {#each state.recentWorkspaces as workspace}
+          {#each state.recentWorkspaces as workspace, wsIdx}
             <div class="recent-row" class:active={taskWorkspace === workspace}>
               <button class="recent-item" type="button" title={workspace} onclick={() => selectRecentWorkspace(workspace)}>
-                <Icon name="folder" size={14} class="recent-icon" />
+                <span class="recent-idx mono">{String(wsIdx + 1).padStart(2, '0')}</span>
                 <span class="recent-path mono">{projectName(workspace)}</span>
               </button>
               <button class="recent-remove" type="button" aria-label="Remove from recents" title="Remove" onclick={(event) => removeRecentWorkspace(workspace, event)}>
@@ -1258,17 +1264,17 @@
           <div class="dash-overview">
             <div class="nav-label">Overview</div>
             <div class="stat-grid dash-stat-grid">
-              <div class="stat-card">
+              <div class="stat-card stripe-sessions">
                 <span class="stat-label">Sessions</span>
                 <span class="stat-value mono">{state.sessions.length}</span>
                 <span class="stat-sub">{state.metrics.sessionsBusy || 0} busy · {state.metrics.sessionsRetry || 0} wait</span>
               </div>
-              <div class="stat-card">
+              <div class="stat-card stripe-tasks">
                 <span class="stat-label">Tasks</span>
                 <span class="stat-value mono">{activeTasks.length}</span>
                 <span class="stat-sub">{state.metrics.running || 0} running</span>
               </div>
-              <div class="stat-card stat-card-accent">
+              <div class="stat-card stat-card-accent stripe-tokens">
                 <span class="stat-label">{periodLabel(usagePeriod)} tokens</span>
                 <span class="stat-value mono">{formatTokens(usage.tokenTotal)}</span>
                 <span class="stat-sub">
@@ -1276,7 +1282,7 @@
                 </span>
                 <span class="stat-est dim mono">Est. {formatCost(usage.totalCost)}</span>
               </div>
-              <div class="stat-card">
+              <div class="stat-card stripe-cache">
                 <span class="stat-label">Cache read</span>
                 <span class="stat-value mono">{formatTokens(usage.totalTokens?.cacheRead || 0)}</span>
                 <span class="stat-sub">{formatPercent(usage.cacheEfficiency)} of input+ cache</span>
@@ -1307,22 +1313,26 @@
               <span class="dash-title">Token breakdown · {periodLabel(usagePeriod)}</span>
               <span class="dash-meta dim">Session totals for active sessions in this window</span>
             </div>
-            <div class="token-bar" aria-hidden="true">
-              {#each tokenBreakdown as part}
-                {#if part.value > 0}
-                  <span class={`token-bar-seg token-${part.tone}`} style={`width: ${part.pct}%`} title={`${part.label}: ${formatTokens(part.value)}`}></span>
-                {/if}
-              {/each}
-            </div>
-            <div class="token-legend">
-              {#each tokenBreakdown as part}
-                <div class="token-legend-item">
-                  <span class={`token-swatch token-${part.tone}`}></span>
-                  <span>{part.label}</span>
-                  <span class="mono">{formatTokens(part.value)}</span>
-                </div>
-              {/each}
-            </div>
+            {#if tokenBreakdown.hasData}
+              <div class="token-bar" aria-hidden="true">
+                {#each tokenBreakdown.parts as part}
+                  {#if part.value > 0}
+                    <span class={`token-bar-seg token-${part.tone}`} style={`width: ${part.pct}%`} title={`${part.label}: ${formatTokens(part.value)}`}></span>
+                  {/if}
+                {/each}
+              </div>
+              <div class="token-legend">
+                {#each tokenBreakdown.parts as part}
+                  <div class="token-legend-item">
+                    <span class={`token-swatch token-${part.tone}`}></span>
+                    <span>{part.label}</span>
+                    <span class="mono">{formatTokens(part.value)}</span>
+                  </div>
+                {/each}
+              </div>
+            {:else}
+              <div class="token-empty dim">No token usage in this window yet.</div>
+            {/if}
           </div>
 
           {#if usage.byModel?.length}
@@ -1552,12 +1562,13 @@
             </div>
             {#if state.recentWorkspaces.length}
               <div class="composer-recents">
-                {#each state.recentWorkspaces.slice(0, 5) as workspace}
+                {#each state.recentWorkspaces.slice(0, 5) as workspace, idx}
                   <button
                     type="button"
                     class="template-chip"
                     class:active={taskWorkspace === workspace}
                     title={workspace}
+                    data-index={String(idx + 1).padStart(2, '0')}
                     onclick={() => selectRecentWorkspace(workspace)}
                   >{projectName(workspace)}</button>
                 {/each}
@@ -1614,7 +1625,7 @@
               {@const checkCount = stepAcceptanceFilledCount(step)}
               <div class="task-step" class:expanded>
                 <div class="task-step-main">
-                  <span class="task-step-num">{i + 1}</span>
+                  <span class="task-step-num">{String(i + 1).padStart(2, '0')}.</span>
                   <input
                     type="text"
                     bind:value={taskPlan.steps[i].title}
@@ -2039,7 +2050,10 @@
                 {@const entryId = messageEntryId(message, msgIndex)}
                 {@const ts = messageTimestamp(message)}
                 <li class={`msg-bubble msg-bubble-${role}`}>
-                  {#if ts}<time class="msg-bubble-ts">{ts}</time>{/if}
+                  <div class="msg-bubble-head">
+                    <span class="msg-bubble-role">{role}</span>
+                    {#if ts}<time class="msg-bubble-ts">{ts}</time>{/if}
+                  </div>
                   <div class="msg-bubble-body">
                     {#each blocks as block, blockIndex}
                       {@const expandKey = blockExpandKey(entryId, blockIndex)}
