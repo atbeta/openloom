@@ -78,8 +78,15 @@ async def run_watch(
     task_id = harness.add_task(first_spec)
 
     print(f"openloom: watching {task_id[:12]} — {spec_name}")
+    print(f"  opencode:  {settings.opencode_url}")
     print(f"  workspace: {first_spec.get('workspace', '?')}")
     print(f"  interval:  {first_spec.get('check_interval_seconds', 300)}s")
+    n_webhooks = len(settings.notify.webhooks)
+    n_files = len(settings.notify.files)
+    if n_webhooks:
+        print(f"  notify:    {n_webhooks} webhook(s)")
+    if n_files:
+        print(f"  notify:    {n_files} file sink(s)")
     print()
 
     try:

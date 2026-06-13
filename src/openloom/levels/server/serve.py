@@ -109,6 +109,17 @@ async def run_serve(
     print(f"  store:    {settings.database_path}")
     print(f"  tasks:    {len(due)} pending/running")
     print(f"  sessions: {len(monitor.sessions)} visible")
+    n_webhooks = len(settings.notify.webhooks)
+    n_files = len(settings.notify.files)
+    if n_webhooks:
+        print(f"  notify:   {n_webhooks} webhook(s)")
+    if n_files:
+        print(f"  notify:   {n_files} file sink(s)")
+    if settings.inbox_dir is not None:
+        print(
+            f"  inbox:    {settings.inbox_dir}/{settings.inbox_filename}"
+            f"  poll={settings.inbox_poll_interval_seconds:.0f}s"
+        )
     print()
 
     config = uvicorn.Config(app, host=settings.ui_host, port=settings.ui_port, log_level="warning")
