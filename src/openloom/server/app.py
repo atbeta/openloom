@@ -241,6 +241,28 @@ def create_app(
     async def sse_events():
         return await task_routes.event_stream(store, web_sink)
 
+    @app.post("/api/inbox/trigger")
+    async def inbox_trigger_endpoint(req: Request):
+        """Webhook entry — accept markdown text (or a file path on disk)
+        and dispatch it as a task. Mirrors the file-watcher's behaviour
+        so callers without access to the synced directory can still
+        push tasks."""
+        if parse_spec is None and settings is None:
+            raise HTTPException(
+                status_code=501,
+                detail="inbox trigger needs parse_spec or settings binding",
+            )
+        body = await req.json()
+        try:
+            result = task_routes.inbox_trigger(
+                _require_harness(),
+                parse_spec,
+                body,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return result
+
     @app.post("/api/tasks/{task_id}/archive")
     async def archive(task_id: str):
         return _run_task_command(_require_harness().archive_task, task_id)

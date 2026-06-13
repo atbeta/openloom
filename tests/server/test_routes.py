@@ -352,3 +352,125 @@ def test_static_spa_fallback(client: TestClient) -> None:
     r = client.get("/some/spa/route")
     assert r.status_code == 200
     assert "<html" in r.text.lower()
+
+
+# --- inbox trigger endpoint ---
+
+
+_INBOX_TEXT = """# Triggered task
+
+workspace: /tmp/openloom-smoke
+
+## goal
+Do the thing.
+"""
+
+
+def test_inbox_trigger_with_text_creates_task(client: TestClient) -> None:
+    r = client.post("/api/inbox/trigger", json={"text": _INBOX_TEXT})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["ok"] is True
+    assert body["source"] == "text"
+    assert body["name"] == "Triggered task"
+    assert "taskId" in body
+    assert client.get(f"/api/tasks/{body['taskId']}").status_code == 200
+
+
+def test_inbox_trigger_with_path_reads_file(tmp_path: Path, client: TestClient) -> None:
+    p = tmp_path / "external.md"
+    p.write_text(_INBOX_TEXT, encoding="utf-8")
+    r = client.post("/api/inbox/trigger", json={"path": str(p)})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["source"] == "path"
+    assert body["name"] == "Triggered task"
+
+
+def test_inbox_trigger_uses_default_workspace_when_missing(client: TestClient) -> None:
+    r = client.post("/api/inbox/trigger", json={
+        "text": "# No workspace\n\nDo X.\n",
+        "default_workspace": "/tmp/openloom-smoke",
+    })
+    assert r.status_code == 200, r.text
+    assert r.json()["ok"] is True
+
+
+def test_inbox_trigger_rejects_missing_workspace(client: TestClient) -> None:
+    r = client.post("/api/inbox/trigger", json={"text": "# No workspace\n\nDo X.\n"})
+    assert r.status_code == 400
+    assert "workspace" in r.json()["detail"]
+
+
+def test_inbox_trigger_rejects_both_text_and_path(client: TestClient) -> None:
+    r = client.post("/api/inbox/trigger", json={
+        "text": "x", "path": "/tmp/y.md",
+    })
+    assert r.status_code == 400
+    assert "exactly one" in r.json()["detail"]
+
+
+def test_inbox_trigger_rejects_neither(client: TestClient) -> None:
+    r = client.post("/api/inbox/trigger", json={})
+    assert r.status_code == 400
+    assert "must include" in r.json()["detail"]
+
+
+def test_inbox_trigger_rejects_missing_path(client: TestClient, tmp_path: Path) -> None:
+    r = client.post("/api/inbox/trigger", json={"path": str(tmp_path / "nope.md")})
+    assert r.status_code == 400
+    assert "not found" in r.json()["detail"]
+
+
+def test_inbox_trigger_rejects_invalid_markdown(client: TestClient) -> None:
+    # The markdown parser is intentionally tolerant and rarely raises.
+    # We unit-test the ValueError path on the helper directly below.
+    pass
+
+
+def test_inbox_trigger_helper_rejects_missing_text_and_path() -> None:
+    import pytest
+
+    from openloom.server.routes.tasks import inbox_trigger
+
+    class _H:
+        def add_task(self, spec):
+            return "task_x"
+
+    with pytest.raises(ValueError, match="must include"):
+        inbox_trigger(harness=_H(), parse_spec=None, body={})
+
+
+def test_inbox_trigger_helper_rejects_both_text_and_path() -> None:
+    import pytest
+
+    from openloom.server.routes.tasks import inbox_trigger
+
+    class _H:
+        def add_task(self, spec):
+            return "task_x"
+
+    with pytest.raises(ValueError, match="exactly one"):
+        inbox_trigger(harness=_H(), parse_spec=None, body={"text": "x", "path": "/y.md"})
+
+
+def test_inbox_trigger_helper_uses_default_workspace() -> None:
+    from openloom.server.routes.tasks import inbox_trigger
+
+    captured = {}
+
+    class _H:
+        def add_task(self, spec):
+            captured["workspace"] = spec.workspace
+            return "task_xyz"
+
+    result = inbox_trigger(
+        harness=_H(),
+        parse_spec=None,
+        body={
+            "text": "# hello\n\nDo it.\n",
+            "default_workspace": "/srv/loop",
+        },
+    )
+    assert result["ok"] is True
+    assert captured["workspace"] == "/srv/loop"

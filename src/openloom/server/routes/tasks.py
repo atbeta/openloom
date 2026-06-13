@@ -179,3 +179,63 @@ def _status_counts(tasks: list[dict[str, Any]], session_status: dict[str, Any]) 
         "sessionsIdle": sessions_idle,
         "sessionsRetry": sessions_retry,
     }
+
+
+def inbox_trigger(
+    harness: Any,
+    parse_spec: Any,
+    body: dict[str, Any],
+) -> dict[str, Any]:
+    """Webhook entry point — accept a markdown body (or a file path) and
+    create a task the same way the file-watcher would. Designed for
+    callers that cannot write into the synced inbox directory
+    (phone, CI, etc.).
+
+    Body shape:
+      {"text": "# title\\n..."}   raw markdown, parsed by the same
+                                   parser the watcher uses.
+      {"path": "/abs/file.md"}    read this file from disk and parse
+                                   it; equivalent to the watcher
+                                   consuming it.
+
+    Returns the same shape as the file-watcher's tick: task id + the
+    parsed spec name. Errors return 400 with a message.
+    """
+    from openloom.runtime.prompts import parse_task_spec
+
+    default_workspace = (body.get("default_workspace") or "").strip()
+
+    text = body.get("text")
+    path = body.get("path")
+    if text is None and path is None:
+        raise ValueError("body must include 'text' or 'path'")
+    if text is not None and path is not None:
+        raise ValueError("body must include exactly one of 'text' or 'path'")
+
+    if path is not None:
+        from pathlib import Path as _P
+
+        p = _P(str(path))
+        if not p.is_file():
+            raise ValueError(f"path not found: {path}")
+        text = p.read_text(encoding="utf-8")
+
+    assert text is not None  # for type checkers
+    try:
+        spec = parse_task_spec(text, "markdown")
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"Invalid markdown task spec: {exc}") from exc
+
+    if not spec.workspace:
+        spec.workspace = default_workspace
+    if not spec.workspace:
+        raise ValueError("workspace is required (set 'workspace:' in markdown, or pass default_workspace)")
+
+    task_id = harness.add_task(spec)
+    return {
+        "ok": True,
+        "taskId": task_id,
+        "name": spec.name,
+        "status": "pending",
+        "source": "path" if path is not None else "text",
+    }
