@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -12,7 +13,10 @@ from .prompts import permission_waiting_summary
 from .session_status import BUSY, RETRY, extract_status_type
 
 PROJECT_CACHE_TTL_SECONDS = 10.0
-MAX_MESSAGES_PER_SESSION = 1000  # backfill ceiling for very long sessions
+MAX_MESSAGES_PER_SESSION = 5000  # backfill ceiling for very long sessions
+BACKFILL_CONCURRENCY = 8  # max simultaneous _fetch_all_messages in flight
+
+_logger = logging.getLogger("openloom.runtime.opencode")
 
 
 def _aggregate_message_stats(messages: list[dict[str, Any]]) -> dict[str, Any]:
@@ -76,9 +80,23 @@ def _aggregate_message_stats(messages: list[dict[str, Any]]) -> dict[str, Any]:
 
 class OpenCodeError(Exception):
     def __init__(self, status_code: int, message: str) -> None:
-        super().__init__(message)
+        super().__init__(status_code, message)
         self.status_code = status_code
         self.message = message
+
+
+# Shared semaphore for the per-message backfill loop — caps how many
+# sessions may simultaneously page through /session/{id}/message
+# during a stats refresh, so a 50-session dashboard poll does not
+# hammer the OpenCode server with hundreds of HTTP calls at once.
+_backfill_semaphore: asyncio.Semaphore | None = None
+
+
+def _backfill_gate() -> asyncio.Semaphore:
+    global _backfill_semaphore
+    if _backfill_semaphore is None:
+        _backfill_semaphore = asyncio.Semaphore(BACKFILL_CONCURRENCY)
+    return _backfill_semaphore
 
 
 def _extract_error_message(response: httpx.Response) -> str:
@@ -238,7 +256,9 @@ class OpenCodeClient:
     async def _populate_session_stats(self, sessions: list[dict[str, Any]]) -> None:
         """Backfill tokens / cost from per-message payload for older
         OpenCode (1.14.x) servers that omit those fields in the session
-        list response. Runs in parallel; only touches sessions that
+        list response. Runs in parallel under a shared semaphore so a
+        big dashboard poll does not hammer the OpenCode server with N
+        concurrent multi-page fetches. Only touches sessions that
         already lack the fields. Results are cached in
         ``self._stats_cache`` keyed by session_id and invalidated when
         the session's ``updated`` timestamp advances, so the 5-15s
@@ -259,7 +279,15 @@ class OpenCodeClient:
             if cached is not None and cached[0] == signature:
                 agg = cached[1]
             else:
-                messages = await self._fetch_all_messages(sid)
+                async with _backfill_gate():
+                    messages = await self._fetch_all_messages(sid)
+                if len(messages) >= MAX_MESSAGES_PER_SESSION:
+                    _logger.warning(
+                        "session %s hit MAX_MESSAGES_PER_SESSION=%d; token "
+                        "totals are a lower bound — raise the cap or split "
+                        "the session",
+                        sid[:12], MAX_MESSAGES_PER_SESSION,
+                    )
                 agg = _aggregate_message_stats(messages)
                 if agg["tokens"] or agg["cost"] is not None:
                     self._stats_cache[sid] = (signature, agg)
@@ -415,43 +443,60 @@ class OpenCodeClient:
         return []
 
     async def _fetch_all_messages(self, session_id: str) -> list[dict[str, Any]]:
-        """Walk the entire message feed, paginated, up to
-        MAX_MESSAGES_PER_SESSION. Used by the stats backfill — the
-        single ``limit=N`` call is a footgun for long sessions
-        (truncates token totals).
+        """Walk the entire message feed via OpenCode's ``before`` cursor.
+
+        OpenCode 1.14+ / 1.15+ / 1.16+ all return a JSON array and
+        accept ``?limit=N&before=<msg_id>`` for pagination. We dedupe
+        defensively (the cursor should already prevent overlap) and
+        stop on a short page, on duplicate-only pages, or when we hit
+        ``MAX_MESSAGES_PER_SESSION``.
+
+        The previous implementation only paginated the dict-response
+        branch (``has_more`` / ``next_cursor``) and unconditionally
+        broke after the first page of a list response, so any session
+        with more than ``page_size`` messages had its token totals
+        truncated to the most recent page — a 350-message session
+        reported only the last 100 messages' tokens, producing a
+        ~3.5x undercount vs OpenCode's own ``stats`` output.
         """
-        page_size = 100
+        page_size = 200
         out: list[dict[str, Any]] = []
-        cursor: int | None = 0
+        seen_ids: set[str] = set()
+        before: str | None = None
         while len(out) < MAX_MESSAGES_PER_SESSION:
             params: dict[str, str] = {"limit": str(page_size)}
-            if cursor is not None:
-                params["cursor"] = str(cursor)
+            if before is not None:
+                params["before"] = before
             try:
                 data = await self._request_json(
                     "GET", f"/session/{session_id}/message", params=params,
                 )
             except Exception:
                 return out
-            if isinstance(data, list):
-                page = [m for m in data if isinstance(m, dict)]
-                out.extend(page)
-                break  # list response: server returned everything
-            if isinstance(data, dict):
-                page = data.get("messages") or data.get("data") or []
-                if not isinstance(page, list):
-                    return out
-                page = [m for m in page if isinstance(m, dict)]
-                out.extend(page)
-                # Some servers return ``next_cursor`` / ``has_more``.
-                has_more = data.get("has_more") or data.get("hasMore")
-                next_cursor = data.get("next_cursor") or data.get("nextCursor")
-                if has_more and next_cursor is not None:
-                    cursor = int(next_cursor)
-                    continue
+            if not isinstance(data, list):
+                return out
+            page = [m for m in data if isinstance(m, dict)]
+            if not page:
                 break
-            return out
-        return out[:MAX_MESSAGES_PER_SESSION]
+            added = 0
+            for m in page:
+                mid = m.get("id") or m.get("messageID")
+                if mid and mid in seen_ids:
+                    continue
+                if mid:
+                    seen_ids.add(mid)
+                out.append(m)
+                added += 1
+                if len(out) >= MAX_MESSAGES_PER_SESSION:
+                    break
+            if added == 0:
+                break  # entire page was duplicates — cursor is stuck
+            if len(page) < page_size:
+                break  # short page = last page
+            before = page[-1].get("id") or page[-1].get("messageID")
+            if not before:
+                break
+        return out
 
     @staticmethod
     def _normalize_permission(item: dict[str, Any]) -> dict[str, Any]:
