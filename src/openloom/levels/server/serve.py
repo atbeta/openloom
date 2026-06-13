@@ -6,7 +6,7 @@ import sys
 from typing import Any
 
 
-async def run_serve(settings: Any) -> None:
+async def run_serve(settings: Any, *, extra_sinks: Any = None) -> None:
     from openloom.server.cold import require_fastapi
     require_fastapi()
 
@@ -46,6 +46,9 @@ async def run_serve(settings: Any) -> None:
 
     web_sink = get_sink("web")()
     bus.subscribe_all(web_sink.on_event)
+
+    for ns in (extra_sinks or ()):
+        bus.subscribe_all(ns.on_event)
 
     checker_cls = get_checker("string")
     checker = checker_cls()

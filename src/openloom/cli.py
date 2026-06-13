@@ -39,10 +39,17 @@ def _require_web_extras() -> None:
         )
 
 
+def _build_notify_sinks(settings: Settings) -> list[Any]:
+    from openloom.levels.notify import build_sinks
+
+    return build_sinks(settings.notify)
+
+
 async def _run_watch_with_ui(
     spec: str | None,
     settings: Settings,
     web_sink: Any,
+    extra_sinks: Any,
     *,
     store_path: Path,
 ) -> None:
@@ -58,6 +65,8 @@ async def _run_watch_with_ui(
     store = Store(store_path)
     bus = EventBus()
     bus.subscribe_all(web_sink.on_event)
+    for ns in extra_sinks:
+        bus.subscribe_all(ns.on_event)
 
     client = OpenCodeClient(
         settings.opencode_url, settings.opencode_username, settings.opencode_password,
@@ -91,6 +100,7 @@ async def _run_watch_with_ui(
             bus=bus,
             web_sink=web_sink,
             harness=harness,
+            extra_sinks=extra_sinks,
         )
     finally:
         server.should_exit = True
@@ -124,6 +134,7 @@ def main() -> None:
 
     args = parser.parse_args()
     settings = Settings.from_env()
+    notify_sinks = _build_notify_sinks(settings)
 
     if args.command == "init":
         from openloom.levels.config.spec import generate_config
@@ -148,13 +159,17 @@ def main() -> None:
             web_sink = WebSink()
             asyncio.run(
                 _run_watch_with_ui(
-                    args.spec, settings, web_sink, store_path=store_path
+                    args.spec, settings, web_sink, notify_sinks, store_path=store_path,
                 )
             )
         else:
             from openloom.levels.manual.watch import run_watch
 
-            asyncio.run(run_watch(args.spec, settings, store_path=store_path))
+            asyncio.run(
+                run_watch(
+                    args.spec, settings, store_path=store_path, extra_sinks=notify_sinks,
+                )
+            )
 
     elif args.command == "serve":
         import openloom.levels.manual.checker  # noqa: F401
@@ -180,7 +195,7 @@ def main() -> None:
                 ui_port=args.port,
             )
 
-        asyncio.run(run_serve(settings))
+        asyncio.run(run_serve(settings, extra_sinks=notify_sinks))
 
     elif args.command == "status":
         store = Store(settings.database_path)

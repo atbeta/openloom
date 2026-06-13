@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+
+from openloom.levels.notify.config import NotifyConfig
 
 
 @dataclass(frozen=True)
@@ -15,6 +17,7 @@ class Settings:
     ui_port: int = 55413
     max_task_tokens: int | None = None
     max_task_runtime_minutes: int | None = None
+    notify: NotifyConfig = field(default_factory=NotifyConfig.empty)
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -31,6 +34,7 @@ class Settings:
             ui_port=int(os.getenv("OPENLOOM_UI_PORT", "55413")),
             max_task_tokens=_optional_env_int("OPENLOOM_MAX_TASK_TOKENS"),
             max_task_runtime_minutes=_optional_env_int("OPENLOOM_MAX_TASK_RUNTIME_MINUTES"),
+            notify=NotifyConfig.from_env(),
         )
 
 

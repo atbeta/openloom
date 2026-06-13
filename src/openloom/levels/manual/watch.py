@@ -24,6 +24,7 @@ async def run_watch(
     web_sink: Any = None,
     bus: Any = None,
     harness: Any = None,
+    extra_sinks: Any = None,
 ) -> None:
     source_cls = get_source("manual")
     source = source_cls()
@@ -68,6 +69,9 @@ async def run_watch(
     sink_cls = get_sink("console")
     sink = sink_cls()
     bus.subscribe_all(sink.on_event)
+
+    for ns in (extra_sinks or ()):
+        bus.subscribe_all(ns.on_event)
 
     first_spec = specs[0]
     spec_name = first_spec.get("name", "Untitled")
