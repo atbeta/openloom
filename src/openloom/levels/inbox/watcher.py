@@ -10,7 +10,7 @@ from . import safe_rename, sanitise_tag
 from .parsing import parse_path
 
 if TYPE_CHECKING:
-    from . import InboxSource
+    pass
 
 _logger = logging.getLogger("openloom.inbox.watcher")
 
@@ -18,45 +18,45 @@ DispatchFn = Callable[[dict[str, Any]], Awaitable[str | None]]
 
 
 class InboxWatcher:
-    """Polls an inbox directory and dispatches each new ``.md`` file as a task.
+    """Polls a single inbox file and dispatches it as a task.
 
-    Files are tracked by ``(name, mtime_ns)`` so that:
+    The watcher owns a single file path (default ``task.md``) — the
+    presence of that file is the trigger, and the file is renamed to
+    ``<filename>.processed-<id>`` after a successful dispatch. The
+    next iteration picks up a fresh file with the same name (typically
+    dropped by an external sync tool like Dropbox, OneDrive, scp, …).
 
-    * files present at startup are ignored unless ``process_existing`` is set;
-    * re-edits after dispatch do **not** re-trigger (file already renamed);
-    * same-name concurrent files get unique rename targets.
+    No mtime cursor, no startup scan, no ``process_existing`` flag —
+    the file itself is the queue slot.
     """
 
     def __init__(
         self,
-        source: InboxSource,
+        directory: Path,
         dispatch: DispatchFn,
         *,
-        process_existing: bool = False,
+        default_workspace: str = "",
+        filename: str = "task.md",
         poll_interval_seconds: float = 30.0,
     ) -> None:
-        self._source = source
+        self._directory = Path(directory)
         self._dispatch = dispatch
-        self._process_existing = process_existing
+        self._default_workspace = default_workspace
+        self._filename = filename.strip() or "task.md"
         self._poll_interval_seconds = max(1.0, float(poll_interval_seconds))
-        self._seen: set[tuple[str, int]] = set()
-        if process_existing:
-            self._seed_seen()
 
-    def _seed_seen(self) -> None:
-        directory = self._source.directory
-        if not directory.is_dir():
-            return
-        for path in directory.glob("*.md"):
-            if path.is_file():
-                self._seen.add(_fingerprint(path))
+    @property
+    def target_path(self) -> Path:
+        return self._directory / self._filename
 
     async def run(self) -> None:
-        directory = self._source.directory
-        if not directory.is_dir():
-            _logger.info("inbox: directory %s does not exist; watcher idle", directory)
+        if not self._directory.is_dir():
+            _logger.info("inbox: directory %s does not exist; watcher idle", self._directory)
             return
-        _logger.info("inbox: watching %s every %.0fs", directory, self._poll_interval_seconds)
+        _logger.info(
+            "inbox: watching %s every %.0fs",
+            self.target_path, self._poll_interval_seconds,
+        )
         while True:
             try:
                 await self.tick()
@@ -64,49 +64,40 @@ class InboxWatcher:
                 _logger.exception("inbox tick failed")
             await asyncio.sleep(self._poll_interval_seconds)
 
-    async def tick(self) -> list[Path]:
-        """One scan; returns paths that were dispatched in this pass (testable)."""
-        directory = self._source.directory
-        if not directory.is_dir():
-            return []
-        dispatched: list[Path] = []
-        for path in sorted(directory.glob("*.md")):
-            if not path.is_file():
-                continue
-            fp = _fingerprint(path)
-            if fp in self._seen:
-                continue
-            self._seen.add(fp)
-            payload = parse_path(path, self._source._default_workspace)  # noqa: SLF001
-            if payload is None:
-                self._rename_error(path, "parse-failed")
-                continue
-            try:
-                task_id = await self._dispatch(payload)
-            except Exception as exc:  # noqa: BLE001
-                _logger.warning("inbox: dispatch raised for %s: %s", path.name, exc)
-                self._rename_error(path, "dispatch-raised")
-                continue
-            if not task_id:
-                _logger.info("inbox: dispatcher declined %s (skipped)", path.name)
-                continue
-            tag = sanitise_tag(task_id[:12])
-            try:
-                safe_rename(path, f".processed-{tag}")
-            except OSError as exc:
-                _logger.warning("inbox: dispatched but rename failed for %s: %s", path.name, exc)
-            else:
-                dispatched.append(path)
-        return dispatched
+    async def tick(self) -> bool:
+        """One scan; returns ``True`` if a dispatch happened this pass."""
+        if not self._directory.is_dir():
+            return False
+        path = self.target_path
+        if not path.is_file():
+            return False
+        payload = parse_path(path, self._default_workspace)
+        if payload is None:
+            self._rename_error(path, "parse-failed")
+            return False
+        try:
+            task_id = await self._dispatch(payload)
+        except Exception as exc:  # noqa: BLE001
+            _logger.warning("inbox: dispatch raised for %s: %s", path.name, exc)
+            self._rename_error(path, "dispatch-raised")
+            return False
+        if not task_id:
+            _logger.info("inbox: dispatcher declined %s (skipped)", path.name)
+            # mark as consumed so we don't loop on the same file
+            self._rename(path, ".skipped")
+            return False
+        tag = sanitise_tag(task_id[:12])
+        return self._rename(path, f".processed-{tag}")
 
     @staticmethod
-    def _rename_error(path: Path, reason: str) -> None:
+    def _rename(path: Path, suffix: str) -> bool:
         try:
-            safe_rename(path, f".error-{sanitise_tag(reason)}")
+            safe_rename(path, suffix)
+            return True
         except OSError as exc:
-            _logger.warning("inbox: could not rename %s after error: %s", path.name, exc)
+            _logger.warning("inbox: rename %s -> *%s failed: %s", path.name, suffix, exc)
+            return False
 
-
-def _fingerprint(path: Path) -> tuple[str, int]:
-    stat = path.stat()
-    return (path.name, stat.st_mtime_ns)
+    @classmethod
+    def _rename_error(cls, path: Path, reason: str) -> None:
+        cls._rename(path, f".error-{sanitise_tag(reason)}")

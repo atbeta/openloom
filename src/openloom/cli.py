@@ -54,24 +54,21 @@ def _build_inbox_factory(settings: Settings) -> Any:
     if settings.inbox_dir is None:
         return None
 
-    from openloom.levels.inbox import InboxSource
     from openloom.levels.inbox.watcher import InboxWatcher
     from openloom.runtime.prompts import TaskSpec
 
-    source = InboxSource(
-        settings.inbox_dir,
-        default_workspace=settings.inbox_default_workspace,
-    )
-
     def factory(harness: Any) -> list[Any]:
+        assert settings.inbox_dir is not None  # guarded by caller
+
         async def inbox_dispatch(payload: dict[str, Any]) -> str | None:
             spec_dict = {k: v for k, v in payload.items() if not k.startswith("_")}
             return harness.add_task(TaskSpec.from_dict(spec_dict))
 
         watcher = InboxWatcher(
-            source=source,
+            directory=settings.inbox_dir,
             dispatch=inbox_dispatch,
-            process_existing=settings.inbox_process_existing,
+            default_workspace=settings.inbox_default_workspace,
+            filename=settings.inbox_filename,
             poll_interval_seconds=settings.inbox_poll_interval_seconds,
         )
         return [asyncio.create_task(watcher.run())]

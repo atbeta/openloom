@@ -20,8 +20,8 @@ class Settings:
     notify: NotifyConfig = field(default_factory=NotifyConfig.empty)
     inbox_dir: Path | None = None
     inbox_default_workspace: str = ""
+    inbox_filename: str = "task.md"
     inbox_poll_interval_seconds: float = 30.0
-    inbox_process_existing: bool = False
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -56,9 +56,8 @@ class Settings:
             notify=NotifyConfig.from_env(),
             inbox_dir=inbox_dir,
             inbox_default_workspace=os.getenv("OPENLOOM_INBOX_DEFAULT_WORKSPACE", "").strip(),
+            inbox_filename=os.getenv("OPENLOOM_INBOX_FILENAME", "task.md").strip() or "task.md",
             inbox_poll_interval_seconds=poll_interval,
-            inbox_process_existing=os.getenv("OPENLOOM_INBOX_PROCESS_EXISTING", "").strip().lower() in
-            ("1", "true", "yes", "on"),
         )
 
 
