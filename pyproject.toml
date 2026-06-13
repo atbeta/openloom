@@ -87,6 +87,7 @@ forbidden_modules = [
   "openloom.levels",
   "openloom.levels.manual",
   "openloom.levels.config",
+  "openloom.levels.inbox",
   "openloom.levels.notify",
   "openloom.levels.openspec",
   "openloom.levels.ui",
@@ -102,6 +103,7 @@ type = "independence"
 modules = [
   "openloom.levels.manual",
   "openloom.levels.config",
+  "openloom.levels.inbox",
   "openloom.levels.notify",
   "openloom.levels.openspec",
   "openloom.levels.ui",
@@ -117,6 +119,7 @@ forbidden_modules = [
   "openloom.levels",
   "openloom.levels.manual",
   "openloom.levels.config",
+  "openloom.levels.inbox",
   "openloom.levels.notify",
   "openloom.levels.openspec",
   "openloom.levels.ui",

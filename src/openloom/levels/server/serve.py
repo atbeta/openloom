@@ -6,7 +6,12 @@ import sys
 from typing import Any
 
 
-async def run_serve(settings: Any, *, extra_sinks: Any = None) -> None:
+async def run_serve(
+    settings: Any,
+    *,
+    extra_sinks: Any = None,
+    background_tasks_factory: Any = None,
+) -> None:
     from openloom.server.cold import require_fastapi
     require_fastapi()
 
@@ -87,6 +92,10 @@ async def run_serve(settings: Any, *, extra_sinks: Any = None) -> None:
     harness_task = asyncio.create_task(harness_loop())
     monitor_task = asyncio.create_task(monitor_loop())
 
+    extra_background_tasks: list[asyncio.Task[Any]] = []
+    if background_tasks_factory is not None:
+        extra_background_tasks = list(background_tasks_factory(harness) or [])
+
     app = create_app(
         harness=harness, store=store, bus=bus, web_sink=web_sink,
         client=client, monitor=monitor,
@@ -110,10 +119,15 @@ async def run_serve(settings: Any, *, extra_sinks: Any = None) -> None:
     finally:
         harness_task.cancel()
         monitor_task.cancel()
+        for t in extra_background_tasks:
+            t.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await harness_task
         with contextlib.suppress(asyncio.CancelledError):
             await monitor_task
+        for t in extra_background_tasks:
+            with contextlib.suppress(asyncio.CancelledError):
+                await t
 
 
 def _native_pick_folder(initial: str | None = None) -> str | None:

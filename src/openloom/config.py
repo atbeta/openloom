@@ -18,12 +18,31 @@ class Settings:
     max_task_tokens: int | None = None
     max_task_runtime_minutes: int | None = None
     notify: NotifyConfig = field(default_factory=NotifyConfig.empty)
+    inbox_dir: Path | None = None
+    inbox_default_workspace: str = ""
+    inbox_poll_interval_seconds: float = 30.0
+    inbox_process_existing: bool = False
 
     @classmethod
     def from_env(cls) -> Settings:
         database = Path(os.getenv("OPENLOOM_DATABASE", ".openloom/openloom.sqlite3")).expanduser()
         if not database.is_absolute():
             database = Path.cwd() / database
+
+        inbox_raw = os.getenv("OPENLOOM_INBOX_DIR", "").strip()
+        inbox_dir: Path | None = None
+        if inbox_raw:
+            inbox_dir = Path(inbox_raw).expanduser()
+            if not inbox_dir.is_absolute():
+                inbox_dir = Path.cwd() / inbox_dir
+
+        interval_raw = os.getenv("OPENLOOM_INBOX_POLL_SECONDS", "").strip()
+        poll_interval = 30.0
+        if interval_raw:
+            try:
+                poll_interval = max(1.0, float(interval_raw))
+            except ValueError:
+                poll_interval = 30.0
 
         return cls(
             opencode_url=os.getenv("OPENLOOM_OPENCODE_URL", "http://127.0.0.1:4096").rstrip("/"),
@@ -35,6 +54,11 @@ class Settings:
             max_task_tokens=_optional_env_int("OPENLOOM_MAX_TASK_TOKENS"),
             max_task_runtime_minutes=_optional_env_int("OPENLOOM_MAX_TASK_RUNTIME_MINUTES"),
             notify=NotifyConfig.from_env(),
+            inbox_dir=inbox_dir,
+            inbox_default_workspace=os.getenv("OPENLOOM_INBOX_DEFAULT_WORKSPACE", "").strip(),
+            inbox_poll_interval_seconds=poll_interval,
+            inbox_process_existing=os.getenv("OPENLOOM_INBOX_PROCESS_EXISTING", "").strip().lower() in
+            ("1", "true", "yes", "on"),
         )
 
 

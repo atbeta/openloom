@@ -45,6 +45,40 @@ def _build_notify_sinks(settings: Settings) -> list[Any]:
     return build_sinks(settings.notify)
 
 
+def _build_inbox_factory(settings: Settings) -> Any:
+    """Return a factory that spawns the inbox watcher task, or ``None`` if disabled.
+
+    Kept as a factory so ``levels.server`` stays level-agnostic — it just
+    calls ``factory(harness)`` to receive background ``asyncio.Task``s.
+    """
+    if settings.inbox_dir is None:
+        return None
+
+    from openloom.levels.inbox import InboxSource
+    from openloom.levels.inbox.watcher import InboxWatcher
+    from openloom.runtime.prompts import TaskSpec
+
+    source = InboxSource(
+        settings.inbox_dir,
+        default_workspace=settings.inbox_default_workspace,
+    )
+
+    def factory(harness: Any) -> list[Any]:
+        async def inbox_dispatch(payload: dict[str, Any]) -> str | None:
+            spec_dict = {k: v for k, v in payload.items() if not k.startswith("_")}
+            return harness.add_task(TaskSpec.from_dict(spec_dict))
+
+        watcher = InboxWatcher(
+            source=source,
+            dispatch=inbox_dispatch,
+            process_existing=settings.inbox_process_existing,
+            poll_interval_seconds=settings.inbox_poll_interval_seconds,
+        )
+        return [asyncio.create_task(watcher.run())]
+
+    return factory
+
+
 async def _run_watch_with_ui(
     spec: str | None,
     settings: Settings,
@@ -135,6 +169,7 @@ def main() -> None:
     args = parser.parse_args()
     settings = Settings.from_env()
     notify_sinks = _build_notify_sinks(settings)
+    inbox_factory = _build_inbox_factory(settings)
 
     if args.command == "init":
         from openloom.levels.config.spec import generate_config
@@ -195,7 +230,13 @@ def main() -> None:
                 ui_port=args.port,
             )
 
-        asyncio.run(run_serve(settings, extra_sinks=notify_sinks))
+        asyncio.run(
+            run_serve(
+                settings,
+                extra_sinks=notify_sinks,
+                background_tasks_factory=inbox_factory,
+            )
+        )
 
     elif args.command == "status":
         store = Store(settings.database_path)
