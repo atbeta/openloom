@@ -196,11 +196,19 @@ class OpenCodeClient:
         # refetch. Keeps the dashboard from refetching 100 messages for
         # every visible session on every 5-15s poll.
         self._stats_cache: dict[str, tuple[int, dict[str, Any]]] = {}
+        # Long-lived HTTP client for connection reuse (HTTP keep-alive).
+        # Created eagerly — the underlying connection pool is lazy and
+        # only opens sockets on first request.
+        self._http = httpx.AsyncClient(
+            base_url=self.base_url,
+            auth=self.auth,
+            timeout=20,
+            transport=httpx.AsyncHTTPTransport(trust_env=False),
+        )
 
     async def health(self) -> OpenCodeHealth:
         try:
-            async with self._client() as client:
-                response = await client.get("/")
+            response = await self._http.get("/")
             if response.status_code in (200, 401, 404):
                 return OpenCodeHealth(True, response.status_code, "reachable")
             return OpenCodeHealth(False, response.status_code, response.text[:200])
@@ -651,20 +659,17 @@ class OpenCodeClient:
         return response.json()
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
-        timeout = kwargs.pop("timeout", 20)
-        async with self._client(timeout=timeout) as client:
-            response = await client.request(method, path, **kwargs)
+        timeout = kwargs.pop("timeout", None)
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        response = await self._http.request(method, path, **kwargs)
         if response.status_code >= 400:
             raise OpenCodeError(response.status_code, _extract_error_message(response))
         return response
 
-    def _client(self, timeout: float = 20) -> httpx.AsyncClient:
-        return httpx.AsyncClient(
-            base_url=self.base_url,
-            auth=self.auth,
-            timeout=timeout,
-            transport=httpx.AsyncHTTPTransport(trust_env=False),
-        )
+    async def close(self) -> None:
+        """Close the underlying HTTP client."""
+        await self._http.aclose()
 
     def _normalize_session(self, session: dict[str, Any]) -> dict[str, Any]:
         session_id = session.get("id") or session.get("sessionID") or session.get("sessionId")

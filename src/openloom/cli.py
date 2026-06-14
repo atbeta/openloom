@@ -13,7 +13,6 @@ from typing import Any
 
 from openloom import __version__
 from openloom.config import Settings
-from openloom.core.events import EventBus
 from openloom.core.store import Store
 
 
@@ -145,32 +144,17 @@ async def _run_watch_with_ui(
 ) -> None:
     import uvicorn
 
-    from openloom.core.harness import HarnessRunner
-    from openloom.core.registry import get_checker
     from openloom.levels.manual.watch import run_watch
-    from openloom.runtime import prompts, session_status
-    from openloom.runtime.opencode import OpenCodeClient
+    from openloom.runtime import prompts
+    from openloom.runtime.factory import build_harness
     from openloom.server.app import create_app
 
-    store = Store(store_path)
-    bus = EventBus()
-    bus.subscribe_all(web_sink.on_event)
-    for ns in extra_sinks:
-        bus.subscribe_all(ns.on_event)
-
-    client = OpenCodeClient(
-        settings.opencode_url, settings.opencode_username, settings.opencode_password,
+    bundle = build_harness(
+        settings,
+        store_path=store_path,
+        extra_sinks=[web_sink, *extra_sinks],
     )
-    harness = HarnessRunner(
-        opencode=client,
-        bus=bus,
-        store=store,
-        checker=get_checker("string")(),
-        prompts=prompts,
-        status=session_status,
-        max_task_tokens=settings.max_task_tokens,
-        max_task_runtime_minutes=settings.max_task_runtime_minutes,
-    )
+    store, bus, _, harness = bundle.store, bundle.bus, bundle.client, bundle.harness
 
     app = create_app(
         harness=harness, store=store, bus=bus, web_sink=web_sink,

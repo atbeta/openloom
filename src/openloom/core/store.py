@@ -53,16 +53,22 @@ class Store:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.Lock()
+        # Persistent connection — reused across calls for lower latency.
+        # check_same_thread=False is safe because _lock serialises all writes.
+        self._conn = sqlite3.connect(
+            str(self.path), check_same_thread=False,
+        )
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL")
         self._init()
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(str(self.path))
-        conn.row_factory = sqlite3.Row
-        return conn
+    def close(self) -> None:
+        """Close the underlying SQLite connection."""
+        self._conn.close()
 
     def _init(self) -> None:
-        with self._lock, self._connect() as conn:
-            conn.executescript(
+        with self._lock:
+            self._conn.executescript(
                 "CREATE TABLE IF NOT EXISTS tasks ("
                 "id TEXT PRIMARY KEY, name TEXT NOT NULL, spec_json TEXT NOT NULL,"
                 "workspace TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'pending',"
@@ -77,16 +83,17 @@ class Store:
                 "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);"
                 "INSERT OR IGNORE INTO meta(key, value) VALUES ('store_version', '0');"
             )
-            conn.commit()
+            self._conn.commit()
 
     @property
     def store_version(self) -> int:
-        with self._lock, self._connect() as conn:
-            row = conn.execute("SELECT value FROM meta WHERE key = 'store_version'").fetchone()
+        with self._lock:
+            row = self._conn.execute("SELECT value FROM meta WHERE key = 'store_version'").fetchone()
         return int(row["value"]) if row else 0
 
     def _write(self, mutator: Callable[[sqlite3.Connection], None]) -> int:
-        with self._lock, self._connect() as conn:
+        with self._lock:
+            conn = self._conn
             conn.execute("BEGIN IMMEDIATE")
             try:
                 mutator(conn)
@@ -151,19 +158,19 @@ class Store:
         return self._write(mutator)
 
     def get_task(self, task_id: str) -> dict[str, Any] | None:
-        with self._connect() as conn:
-            row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        with self._lock:
+            row = self._conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
         return self._row_to_task(row) if row else None
 
     def list_tasks(self, limit: int = 50) -> list[dict[str, Any]]:
-        with self._connect() as conn:
-            rows = conn.execute("SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
+        with self._lock:
+            rows = self._conn.execute("SELECT * FROM tasks ORDER BY created_at DESC LIMIT ?", (limit,)).fetchall()
         return [self._row_to_task(row) for row in rows]
 
     def list_due_tasks(self, limit: int = 20) -> list[dict[str, Any]]:
         now = time.time()
-        with self._connect() as conn:
-            rows = conn.execute(
+        with self._lock:
+            rows = self._conn.execute(
                 "SELECT * FROM tasks WHERE status IN ('pending', 'running', 'waiting')"
                 " AND (next_check_at IS NULL OR next_check_at <= ?)"
                 " ORDER BY COALESCE(next_check_at, 0) ASC LIMIT ?",
@@ -172,10 +179,14 @@ class Store:
         return [self._row_to_task(row) for row in rows]
 
     def append_check_log(self, task_id: str, *, status: str, summary: str, detail: str = "") -> int:
-        with self._lock, self._connect() as conn:
-            row = conn.execute("SELECT check_log_json FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        with self._lock:
+            row = self._conn.execute("SELECT check_log_json FROM tasks WHERE id = ?", (task_id,)).fetchone()
             if not row:
-                return self.store_version
+                # Inline version read to avoid re-entrant lock acquisition.
+                ver_row = self._conn.execute(
+                    "SELECT value FROM meta WHERE key = 'store_version'"
+                ).fetchone()
+                return int(ver_row["value"]) if ver_row else 0
             log = list(json.loads(row["check_log_json"] or "[]"))
             log.append({"at": time.time(), "status": status, "summary": summary, "detail": detail[:2000]})
             log_json = json.dumps(log[-100:], ensure_ascii=False)

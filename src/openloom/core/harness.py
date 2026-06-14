@@ -4,30 +4,37 @@ import time
 import uuid
 from typing import Any
 
-from .checker import CheckResult
 from .events import Event, EventBus, EventType
+from .protocols import (
+    CheckerPort,
+    CheckResultProtocol,
+    OpenCodePort,
+    PromptsPort,
+    StatusPort,
+    StorePort,
+)
 from .store import new_task_record
 
 
 class HarnessRunner:
     def __init__(
         self,
-        opencode: Any,
+        opencode: OpenCodePort,
         bus: EventBus,
-        store: Any,
-        checker: Any,
-        prompts: Any,
-        status: Any,
+        store: StorePort,
+        checker: CheckerPort,
+        prompts: PromptsPort,
+        status: StatusPort,
         *,
         max_task_tokens: int | None = None,
         max_task_runtime_minutes: int | None = None,
     ) -> None:
-        self.opencode = opencode
-        self.bus = bus
-        self.store = store
-        self.checker = checker
-        self.prompts = prompts
-        self.status = status
+        self.opencode: OpenCodePort = opencode
+        self.bus: EventBus = bus
+        self.store: StorePort = store
+        self.checker: CheckerPort = checker
+        self.prompts: PromptsPort = prompts
+        self.status: StatusPort = status
         self.max_task_tokens = max_task_tokens
         self.max_task_runtime_minutes = max_task_runtime_minutes
 
@@ -226,7 +233,7 @@ class HarnessRunner:
         messages = await self.opencode.messages(session_id, limit=50)
         is_busy = self.prompts.messages_indicate_busy(messages)
 
-        result: CheckResult = self.checker.check(messages, spec_data)
+        result: CheckResultProtocol = self.checker.check(messages, spec_data)
 
         current_step = int(task.get("current_step") or 0)
         progress_step = int(result.step_done or 0)

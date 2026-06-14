@@ -34,6 +34,8 @@ def _walk(rel: str) -> list[Path]:
         "openloom.core.checker",
         "openloom.core.events",
         "openloom.core.harness",
+        "openloom.core.notify_config",
+        "openloom.core.protocols",
         "openloom.core.registry",
         "openloom.core.sink",
         "openloom.core.source",

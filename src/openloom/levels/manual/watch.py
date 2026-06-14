@@ -8,11 +8,8 @@ from typing import Any
 import openloom.levels.manual.checker  # noqa: F401
 import openloom.levels.manual.sink  # noqa: F401
 import openloom.levels.manual.source  # noqa: F401
-from openloom.core.events import EventBus
-from openloom.core.harness import HarnessRunner
-from openloom.core.registry import get_checker, get_sink, get_source
-from openloom.core.store import Store
-from openloom.runtime import prompts, session_status
+from openloom.core.registry import get_sink, get_source
+from openloom.runtime.factory import build_harness
 from openloom.runtime.opencode import OpenCodeClient, format_opencode_unreachable_help
 
 
@@ -44,34 +41,30 @@ async def run_watch(
         )
         sys.exit(1)
 
-    db_path = Path(store_path) if store_path else settings.database_path
-    store = harness.store if harness is not None else Store(db_path)
-    bus = bus if bus is not None else EventBus()
-
-    if web_sink is not None:
-        bus.subscribe_all(web_sink.on_event)
-
     if harness is None:
-        checker_cls = get_checker("string")
-        checker = checker_cls()
-
-        harness = HarnessRunner(
-            opencode=client,
+        db_path = Path(store_path) if store_path else settings.database_path
+        sink_list: list[Any] = []
+        if web_sink is not None:
+            sink_list.append(web_sink)
+        sink_list.extend(extra_sinks or ())
+        bundle = build_harness(
+            settings,
+            store_path=db_path,
+            client=client,
             bus=bus,
-            store=store,
-            checker=checker,
-            prompts=prompts,
-            status=session_status,
-            max_task_tokens=getattr(settings, "max_task_tokens", None),
-            max_task_runtime_minutes=getattr(settings, "max_task_runtime_minutes", None),
+            extra_sinks=sink_list,
+            subscribe_console=True,
         )
-
-    sink_cls = get_sink("console")
-    sink = sink_cls()
-    bus.subscribe_all(sink.on_event)
-
-    for ns in (extra_sinks or ()):
-        bus.subscribe_all(ns.on_event)
+        harness = bundle.harness
+        bus = bundle.bus
+    else:
+        if web_sink is not None:
+            bus.subscribe_all(web_sink.on_event)
+        for ns in (extra_sinks or ()):
+            bus.subscribe_all(ns.on_event)
+        sink_cls = get_sink("console")
+        sink = sink_cls()
+        bus.subscribe_all(sink.on_event)
 
     first_spec = specs[0]
     spec_name = first_spec.get("name", "Untitled")

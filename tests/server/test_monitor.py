@@ -70,19 +70,16 @@ async def test_refresh_drops_status_for_deleted_session() -> None:
 
 @pytest.mark.asyncio
 async def test_refresh_drops_busy_hold_for_deleted_session() -> None:
-    """``_last_busy_at`` is a module-level dict. Even if it was set
+    """``_last_busy_at`` is an instance dict. Even if it was set
     by an earlier tick, when the session is no longer visible the
     entry must be evicted on the next refresh."""
-    from openloom.levels.server import monitor as monitor_mod
-
-    monitor_mod._last_busy_at["ses_ghost"] = 1.0  # simulate prior tick
-
     visible = [_session("ses_alive", updated=1.0)]
     client = _FakeClient(visible, {})
     monitor = SessionMonitor(client)
+    monitor._last_busy_at["ses_ghost"] = 1.0  # simulate prior tick
     await monitor.refresh()
 
-    assert "ses_ghost" not in monitor_mod._last_busy_at
+    assert "ses_ghost" not in monitor._last_busy_at
 
 
 @pytest.mark.asyncio

@@ -14,7 +14,6 @@ from openloom.runtime.session_status import (
     session_updated_at,
 )
 
-_last_busy_at: dict[str, float] = {}
 BUSY_HOLD_SECONDS = 12
 
 
@@ -24,6 +23,7 @@ class SessionMonitor:
         self._status: dict[str, str] = {}
         self._sessions: list[dict[str, Any]] = []
         self._by_directory: dict[str, list[dict[str, Any]]] = {}
+        self._last_busy_at: dict[str, float] = {}
 
     @property
     def status(self) -> dict[str, str]:
@@ -69,9 +69,9 @@ class SessionMonitor:
             if self._status.get(sid) != status:
                 self._status[sid] = status
                 if status in (BUSY, RETRY):
-                    _last_busy_at[sid] = now
+                    self._last_busy_at[sid] = now
 
-            last = _last_busy_at.get(sid, 0)
+            last = self._last_busy_at.get(sid, 0)
             if last and now - last < BUSY_HOLD_SECONDS:
                 self._status[sid] = BUSY
 
@@ -82,9 +82,9 @@ class SessionMonitor:
         for stale in list(self._status):
             if stale not in visible_ids:
                 del self._status[stale]
-        for stale in list(_last_busy_at):
+        for stale in list(self._last_busy_at):
             if stale not in visible_ids:
-                del _last_busy_at[stale]
+                del self._last_busy_at[stale]
 
         self._sessions = sorted(visible, key=session_updated_at, reverse=True)
 
@@ -125,6 +125,6 @@ class SessionMonitor:
         for sid, busy in results:
             if busy:
                 self._status[sid] = BUSY
-                _last_busy_at[sid] = now
+                self._last_busy_at[sid] = now
             # If not busy we leave the row as IDLE; refresh() will
             # pick that up next pass without polluting the cache.

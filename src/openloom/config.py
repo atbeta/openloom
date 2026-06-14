@@ -4,7 +4,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from openloom.levels.notify.config import NotifyConfig
+from openloom.core.notify_config import NotifyConfig
 
 
 @dataclass(frozen=True)

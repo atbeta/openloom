@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import sys
 from typing import Any
+
+_logger = logging.getLogger("openloom.levels.server.serve")
 
 
 async def run_serve(
@@ -17,20 +20,21 @@ async def run_serve(
 
     import uvicorn
 
-    from openloom.core.events import EventBus
-    from openloom.core.harness import HarnessRunner
-    from openloom.core.registry import get_checker, get_sink
-    from openloom.core.store import Store
+    from openloom.core.registry import get_sink
     from openloom.levels.server.monitor import SessionMonitor
     from openloom.runtime import prompts
-    from openloom.runtime import session_status as status_mod
-    from openloom.runtime.opencode import OpenCodeClient, format_opencode_unreachable_help
+    from openloom.runtime.factory import build_harness
+    from openloom.runtime.opencode import format_opencode_unreachable_help
     from openloom.server.app import create_app
     from openloom.server.recent import RecentWorkspaces
 
-    store = Store(settings.database_path)
+    bundle = build_harness(settings, extra_sinks=extra_sinks, subscribe_console=True)
+    store, bus, client, harness = bundle.store, bundle.bus, bundle.client, bundle.harness
+
+    web_sink = get_sink("web")()
+    bus.subscribe_all(web_sink.on_event)
+
     recent = RecentWorkspaces(settings.database_path.parent / "recent.sqlite3")
-    client = OpenCodeClient(settings.opencode_url, settings.opencode_username, settings.opencode_password)
 
     health = await client.health()
     if not health.ok:
@@ -43,33 +47,7 @@ async def run_serve(
             file=sys.stderr,
         )
 
-    bus = EventBus()
-
-    sink_cls = get_sink("console")
-    console_sink = sink_cls()
-    bus.subscribe_all(console_sink.on_event)
-
-    web_sink = get_sink("web")()
-    bus.subscribe_all(web_sink.on_event)
-
-    for ns in (extra_sinks or ()):
-        bus.subscribe_all(ns.on_event)
-
-    checker_cls = get_checker("string")
-    checker = checker_cls()
-
     monitor = SessionMonitor(client)
-
-    harness = HarnessRunner(
-        opencode=client,
-        bus=bus,
-        store=store,
-        checker=checker,
-        prompts=prompts,
-        status=status_mod,
-        max_task_tokens=settings.max_task_tokens,
-        max_task_runtime_minutes=settings.max_task_runtime_minutes,
-    )
 
     await monitor.refresh()
 
@@ -77,16 +55,16 @@ async def run_serve(
         while True:
             try:
                 await harness.tick()
-            except Exception:
-                pass
+            except Exception:  # noqa: BLE001
+                _logger.exception("harness tick loop failed")
             await asyncio.sleep(5)
 
     async def monitor_loop():
         while True:
             try:
                 await monitor.refresh()
-            except Exception:
-                pass
+            except Exception:  # noqa: BLE001
+                _logger.exception("session monitor refresh failed")
             await asyncio.sleep(8)
 
     harness_task = asyncio.create_task(harness_loop())
