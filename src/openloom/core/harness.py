@@ -232,6 +232,12 @@ class HarnessRunner:
 
         messages = await self.opencode.messages(session_id, limit=50)
         is_busy = self.prompts.messages_indicate_busy(messages)
+        # Stable identifier of the latest assistant message at this
+        # point in the session's history. Used to invalidate the
+        # nudge dedup when the agent has produced new content since
+        # the last nudge — otherwise the same prompt would be sent
+        # repeatedly even though the agent had already moved on.
+        assistant_signature = self.prompts.assistant_message_signature(messages)
 
         result: CheckResultProtocol = self.checker.check(messages, spec_data)
 
@@ -329,7 +335,9 @@ class HarnessRunner:
                 )
                 summary = "Periodic check — requested status confirmation"
 
-            if nudge and self.prompts.already_nudged(task, nudge):
+            if nudge and self.prompts.already_nudged(
+                task, nudge, current_signature=assistant_signature,
+            ):
                 nudge = None
                 summary = "Skipped duplicate nudge"
 
@@ -339,7 +347,10 @@ class HarnessRunner:
                     prompt=nudge,
                     agent=agent_name,
                 )
-                nudge_detail = f"nudge:{self.prompts.nudge_fingerprint(nudge)}|{status_text}"
+                nudge_detail = (
+                    f"nudge:{self.prompts.nudge_fingerprint(nudge)}"
+                    f"|{status_text}:{assistant_signature}"
+                )
 
         if result.step_done > 0 and result.step_done not in completed_steps:
             completed_steps.append(result.step_done)

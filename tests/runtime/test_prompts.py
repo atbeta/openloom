@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import pytest
+
 from openloom.runtime.prompts import (
     MIN_CHECK_INTERVAL_SECONDS,
     TaskSpec,
+    already_nudged,
+    assistant_message_signature,
     count_global_acceptance_checked,
     detect_progress,
     extract_abort_from_markdown,
     extract_session_id_from_markdown,
     normalize_check_interval_seconds,
+    nudge_fingerprint,
     parse_task_spec,
     task_is_finished,
     task_spec_from_prompt,
@@ -203,3 +208,142 @@ def test_taskspec_from_dict_default_abort_false() -> None:
     change the behaviour of every existing openloom.yaml in the wild."""
     spec = TaskSpec.from_dict({"name": "x", "workspace": "/w", "goal": "g"})
     assert spec.abort_session is False
+
+
+# --- detect_progress: completion markers ---
+
+
+@pytest.mark.parametrize("text", [
+    "TASK COMPLETE",
+    "TASK DONE",
+    "TASK DONE.",
+    "Task complete.",
+    "task is done",
+    "All steps complete.",
+    "All checks pass.",
+    "All checks passed!",
+    "The task has been done.",
+    "The task is now complete.",
+])
+def test_detect_progress_accepts_common_completion_variants(text: str) -> None:
+    spec = TaskSpec(name="t", workspace="/w", goal="g", steps=["a"])
+    progress = detect_progress(text, spec)
+    assert progress["task_complete"] is True, f"expected True for {text!r}"
+
+
+@pytest.mark.parametrize("text", [
+    "task is not complete yet",
+    "still working on the task, not done",
+    "",
+    "TASK is not yet DONE",  # not yet → no match
+])
+def test_detect_progress_rejects_negative_completion_phrases(text: str) -> None:
+    spec = TaskSpec(name="t", workspace="/w", goal="g", steps=["a"])
+    progress = detect_progress(text, spec)
+    assert progress["task_complete"] is False, f"expected False for {text!r}"
+
+
+# --- detect_progress: step markers (both orderings) ---
+
+
+@pytest.mark.parametrize("text,expected", [
+    ("STEP 1 DONE", 1),
+    ("STEP DONE: 1", 1),
+    ("STEP DONE 1", 1),
+    ("STEP 1 DONE\nSTEP 2 DONE", 2),
+    ("STEP DONE: 2\nSTEP 3 DONE", 3),
+    ("STEP 1 DONE\nrandom text\nSTEP 2 DONE", 2),
+])
+def test_detect_progress_accepts_step_done_both_orderings(text: str, expected: int) -> None:
+    spec = TaskSpec(name="t", workspace="/w", goal="g", steps=["a", "b", "c"])
+    progress = detect_progress(text, spec)
+    assert progress["step_done"] == expected
+
+
+def test_detect_progress_same_turn_multi_step_done_with_task_done() -> None:
+    """The exact user scenario: agent completes the last two
+    steps and the whole task in a single assistant message."""
+    spec = TaskSpec(
+        name="t", workspace="/w", goal="g",
+        steps=["a", "b", "c"], acceptance=["x"],
+    )
+    text = "STEP 2 DONE\nSTEP 3 DONE\nTASK DONE."
+    progress = detect_progress(text, spec)
+    assert progress["task_complete"] is True
+    assert progress["step_done"] == 3
+    assert task_is_finished(
+        task_complete=progress["task_complete"],
+        step_done=progress["step_done"],
+        acceptance_checked=progress["acceptance_checked"],
+        step_count=3, acceptance_count=1,
+    ) is False  # acceptance is "x" not yet checked
+    # But once the acceptance check is ticked, the same turn would
+    # close the task. The fix targets the marker detection, not
+    # the acceptance logic.
+
+
+# --- assistant_message_signature + nudge dedup ---
+
+
+def test_assistant_message_signature_empty_when_no_assistant() -> None:
+    assert assistant_message_signature([]) == ""
+    assert assistant_message_signature([{"info": {"role": "user"}}]) == ""
+
+
+def test_assistant_message_signature_picks_latest_completed() -> None:
+    msgs = [
+        {"info": {"role": "assistant", "id": "m1", "time": {"completed": 100.0}}},
+        {"info": {"role": "user", "id": "u1", "time": {"completed": 110.0}}},
+        {"info": {"role": "assistant", "id": "m2", "time": {"completed": 200.0}}},
+    ]
+    sig = assistant_message_signature(msgs)
+    assert "m2" in sig
+    assert "200" in sig
+
+
+def test_already_nudged_returns_false_when_signature_differs() -> None:
+    """The bug the user reported: the agent produced a new turn
+    between two consecutive checks, but the same nudge text was
+    treated as a duplicate and dropped, so the harness eventually
+    auto-paused the task. With the signature-aware dedup, a new
+    assistant message invalidates the prior nudge."""
+    nudge = "Continue. Reply with TASK COMPLETE when done."
+    fp = nudge_fingerprint(nudge)
+    detail = f"nudge:{fp}|running:old_id|100.0"
+    task = {"check_log": [{"detail": detail}]}
+    # Same nudge, same fingerprint, but the agent's latest
+    # signature is different → not a duplicate.
+    assert already_nudged(task, nudge, current_signature="new_id|200.0") is False
+
+
+def test_already_nudged_returns_true_when_signature_matches() -> None:
+    nudge = "Continue. Reply with TASK COMPLETE when done."
+    fp = nudge_fingerprint(nudge)
+    detail = f"nudge:{fp}|running:m1|100.0"
+    task = {"check_log": [{"detail": detail}]}
+    assert already_nudged(task, nudge, current_signature="m1|100.0") is True
+
+
+def test_already_nudged_returns_false_for_different_fingerprint() -> None:
+    """Even with the same signature, a different nudge text is
+    not a duplicate."""
+    nudge_a = "Continue. Reply with TASK COMPLETE when done."
+    fp_a = nudge_fingerprint(nudge_a)
+    detail = f"nudge:{fp_a}|running:m1|100.0"
+    task = {"check_log": [{"detail": detail}]}
+    assert already_nudged(
+        task, "Completely different nudge text.", current_signature="m1|100.0",
+    ) is False
+
+
+def test_already_nudged_backwards_compatible_when_no_signature() -> None:
+    """Old log entries (before the signature suffix existed) end
+    with just the status; we should fall back to 'not duplicate'
+    so the agent actually gets a nudge on the first call after
+    upgrade. This is conservative — better to re-nudge than to
+    silently stall."""
+    nudge = "Continue. Reply with TASK COMPLETE when done."
+    fp = nudge_fingerprint(nudge)
+    detail = f"nudge:{fp}|running"
+    task = {"check_log": [{"detail": detail}]}
+    assert already_nudged(task, nudge, current_signature="m1|100.0") is False

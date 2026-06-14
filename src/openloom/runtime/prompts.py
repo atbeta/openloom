@@ -231,6 +231,26 @@ def _parse_yaml(text: str) -> dict[str, Any]:
 
 _SESSION_META_RE = re.compile(r"^session(?:\s|_id)?\s*:\s*(.+)$", re.I)
 _ABORT_META_RE = re.compile(r"^abort(?:\s+session)?\s*:\s*(.+)$", re.I)
+# Task-completion markers the agent is allowed to emit. The system
+# prompt tells it to say "TASK COMPLETE" but LLMs are not strict
+# about exact phrasing — they say "TASK DONE", "task is complete",
+# "all steps done", "all checks pass", etc. The detector has to
+# catch the common variants or the harness nudges the agent
+# forever and auto-pauses the task. Each pattern is case-insensitive
+# (the caller uppercases the text first) and whole-line (so we
+# don't false-positive on "the task is not complete yet" — the
+# lookbehind requires a non-letter boundary on the left).
+_TASK_COMPLETE_RE = re.compile(
+    r"(?:^|[\s\W])"
+    r"(?:"
+    r"task\s+(?:complete|done|finished|is\s+(?:complete|done|finished))"
+    r"|all\s+(?:steps?|checks?)\s+(?:complete|done|pass)"
+    r"|all\s+(?:steps?|checks?)\s+pass(?:ed)?"
+    r"|(?:task|the\s+task)\s+(?:has\s+been|is\s+now)\s+(?:complete|done|finished)"
+    r")"
+    r"(?:[.!]|$)",
+    re.I,
+)
 
 
 def extract_session_id_from_markdown(text: str) -> str:
@@ -487,10 +507,22 @@ def task_is_finished(
 
 def detect_progress(text: str, spec: TaskSpec) -> dict[str, Any]:
     upper = text.upper()
-    task_complete = "TASK COMPLETE" in upper
+    task_complete = _TASK_COMPLETE_RE.search(upper) is not None
     step_done = 0
-    for match in re.finditer(r"STEP DONE:\s*(\d+)", text, re.I):
-        step_done = max(step_done, int(match.group(1)))
+    # The system prompt tells the agent to say ``STEP DONE: <n>``
+    # but LLMs frequently invert the order (``STEP <n> DONE``) or
+    # drop the colon (``STEP DONE <n>``). Match both orderings so
+    # the harness does not get stuck on a stylistic variant.
+    for match in re.finditer(
+        r"STEP\s+(?:DONE\s*:?\s*(\d+)|(\d+)\s+DONE)",
+        text,
+        re.I,
+    ):
+        value = match.group(1) or match.group(2)
+        try:
+            step_done = max(step_done, int(value))
+        except (TypeError, ValueError):
+            continue
 
     checked = count_global_acceptance_checked(text, spec.acceptance)
     total_acceptance = len(spec.acceptance)
@@ -643,10 +675,83 @@ def last_log_detail(task: dict[str, Any]) -> str:
     return str(log[-1].get("detail") or "")
 
 
-def already_nudged(task: dict[str, Any], nudge: str) -> bool:
+def assistant_message_signature(messages: list[dict[str, Any]]) -> str:
+    """Return a stable identifier of "the latest assistant message
+    we have observed". Used to invalidate the nudge dedup when
+    the agent has produced new content since the last nudge — a
+    fresh turn from the agent should not be silently dropped
+    just because the harness decided to repeat the same prompt.
+
+    The signature is the (id, completed-timestamp) of the latest
+    assistant message, or the empty string if there is no
+    assistant message yet. Both id and timestamp are stable
+    against edits to earlier messages; the highest-value-of-each
+    pair gives a strong guarantee that a brand-new turn advances
+    the signature.
+    """
+    latest_id = ""
+    latest_completed = 0.0
+    for message in messages:
+        info = message.get("info") if isinstance(message.get("info"), dict) else message
+        if not isinstance(info, dict):
+            continue
+        if str(info.get("role", "")).lower() not in {"assistant", "agent"}:
+            continue
+        mid = str(info.get("id") or "")
+        t = info.get("time") or {}
+        completed = t.get("completed") if isinstance(t, dict) else None
+        completed_f = float(completed) if isinstance(completed, (int, float)) else 0.0
+        if mid or completed_f:
+            # Prefer the most recently completed; the comparison is
+            # by completed timestamp first, then by id (lexicographic)
+            # so two timestamps that are equal still produce a
+            # stable order.
+            if completed_f > latest_completed or (
+                completed_f == latest_completed and mid > latest_id
+            ):
+                latest_id = mid
+                latest_completed = completed_f
+    if not latest_id and not latest_completed:
+        return ""
+    return f"{latest_id}|{latest_completed}"
+
+
+def already_nudged(
+    task: dict[str, Any],
+    nudge: str,
+    current_signature: str = "",
+) -> bool:
+    """Return True if we have already sent this exact nudge for
+    the current assistant-message state. ``current_signature`` is
+    the signature of the latest assistant message *at the time of
+    this call* — if it differs from the signature stored at the
+    last nudge, the dedup is invalidated and we re-nudge.
+
+    This avoids the previous bug where two consecutive checks
+    with the same nudge text but with a fresh agent reply in
+    between were both treated as duplicates; the harness would
+    then auto-pause the task even though the agent had moved on.
+    """
     fp = nudge_fingerprint(nudge)
     detail = last_log_detail(task)
-    return detail.startswith(f"nudge:{fp}")
+    if not detail.startswith(f"nudge:{fp}"):
+        return False
+    # Detail format: "nudge:<fp>|<status>[:<last_signature>]". The
+    # signature is appended by the harness after a successful send.
+    # If we cannot find one (old log entries from before the fix)
+    # we conservatively assume the dedup is invalid.
+    suffix = detail[len(f"nudge:{fp}"):]
+    if "|" not in suffix:
+        return False
+    after_pipe = suffix.split("|", 1)[1]
+    last_signature = ""
+    if ":" in after_pipe:
+        last_signature = after_pipe.split(":", 1)[1]
+    if not current_signature:
+        # Caller didn't provide a signature — fall back to the old
+        # single-fingerprint behaviour (better than nothing).
+        return True
+    return current_signature == last_signature
 
 
 def messages_indicate_busy(messages: list[dict[str, Any]]) -> bool:
