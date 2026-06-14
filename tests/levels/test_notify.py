@@ -277,3 +277,70 @@ def test_build_sinks_emits_both_kinds(tmp_path: Path) -> None:
     assert len(sinks) == 2
     assert isinstance(sinks[0], WebhookSink)
     assert isinstance(sinks[1], FileSink)
+
+
+# --- payload schema: task_name + timestamp_iso ---
+
+
+def _named_event(task_name: str = "Fix the bug") -> Event:
+    return Event(
+        type=EventType.TASK_COMPLETED,
+        task_id="t-1",
+        timestamp=1_700_000_000.0,
+        store_version=3,
+        task_name=task_name,
+        data={"status": "completed", "summary": "ok"},
+    )
+
+
+@respx.mock
+def test_webhook_payload_includes_task_name_and_iso_timestamp() -> None:
+    route = respx.post("https://example.com/hook").mock(
+        return_value=httpx.Response(200, text="ok"),
+    )
+    sink = WebhookSink(url="https://example.com/hook")
+    sink.on_event(_named_event("Fix the bug"))
+    sink.close()
+
+    body = json.loads(route.calls.last.request.content)
+    assert body["task_name"] == "Fix the bug"
+    assert body["timestamp"] == 1_700_000_000.0
+    # 2023-11-14 22:13:20 UTC — fixed point chosen so the test
+    # is not affected by the wall clock the runner sees.
+    assert body["timestamp_iso"] == "2023-11-14T22:13:20Z"
+
+
+@respx.mock
+def test_webhook_payload_task_name_empty_when_not_set() -> None:
+    """Older call sites that omit task_name still serialise the
+    field as an empty string rather than dropping it — sinks and
+    webhook handlers that key on the presence of the field are
+    not surprised by its absence."""
+    route = respx.post("https://example.com/hook").mock(
+        return_value=httpx.Response(200),
+    )
+    sink = WebhookSink(url="https://example.com/hook")
+    sink.on_event(_event())  # no task_name
+    sink.close()
+
+    body = json.loads(route.calls.last.request.content)
+    assert body["task_name"] == ""
+    # timestamp_iso is still computed from the float — always present.
+    assert body["timestamp_iso"] == "2023-11-14T22:13:20Z"
+
+
+def test_file_sink_writes_task_name_and_iso_timestamp(tmp_path: Path) -> None:
+    sink = FileSink(directory=tmp_path)
+    sink.on_event(_named_event("Implement retry"))
+    payload = json.loads((tmp_path / next(tmp_path.iterdir())).read_text())
+    assert payload["task_name"] == "Implement retry"
+    assert payload["timestamp_iso"] == "2023-11-14T22:13:20Z"
+
+
+def test_iso_utc_helper_format() -> None:
+    from openloom.core.events import iso_utc
+
+    # Pin a known instant: 2026-06-15T03:10:56Z (matches the user
+    # complaint — they saw the float and asked for an ISO version).
+    epoch = 1_781_493_056.0
+    assert iso_utc(epoch) == "2026-06-15T03:10:56Z"

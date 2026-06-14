@@ -38,6 +38,18 @@ class HarnessRunner:
         self.max_task_tokens = max_task_tokens
         self.max_task_runtime_minutes = max_task_runtime_minutes
 
+    def _task_name(self, task_id: str) -> str:
+        """Look up the human-readable task name. Best-effort: the
+        store is the source of truth and a missing task (race
+        window between delete and emit) just returns an empty
+        string. The empty string is what an Event with no name
+        also serialises to, so sinks are not required to special
+        case it."""
+        task = self.store.get_task(task_id)
+        if not task:
+            return ""
+        return str(task.get("name") or "")
+
     def add_task(
         self,
         spec: Any,
@@ -63,26 +75,29 @@ class HarnessRunner:
         sv = result.get("store_version", 0)
 
         self.bus.emit(Event(type=EventType.TASK_CREATED, task_id=task_id, store_version=sv,
+                            task_name=spec.name,
                             data={"spec": spec.to_dict(), "workspace": spec.workspace}))
         return task_id
 
     def pause_task(self, task_id: str) -> dict[str, Any]:
         if not self.store.get_task(task_id):
             raise LookupError("Task not found")
+        name = self._task_name(task_id)
         sv = self.store.update_task(task_id, status="paused", next_check_at=None)
         self.bus.emit(Event(
             type=EventType.TASK_UPDATED, task_id=task_id, store_version=sv,
-            data={"status": "paused"},
+            task_name=name, data={"status": "paused"},
         ))
         return {"ok": True, "taskId": task_id, "status": "paused", "store_version": sv}
 
     def resume_task(self, task_id: str) -> dict[str, Any]:
         if not self.store.get_task(task_id):
             raise LookupError("Task not found")
+        name = self._task_name(task_id)
         sv = self.store.update_task(task_id, status="running", next_check_at=time.time())
         self.bus.emit(Event(
             type=EventType.TASK_UPDATED, task_id=task_id, store_version=sv,
-            data={"status": "running"},
+            task_name=name, data={"status": "running"},
         ))
         return {"ok": True, "taskId": task_id, "status": "running", "store_version": sv}
 
@@ -94,6 +109,7 @@ class HarnessRunner:
     ) -> dict[str, Any]:
         if not self.store.get_task(task_id):
             raise LookupError("Task not found")
+        name = self._task_name(task_id)
         sv = self.store.update_task(
             task_id,
             status="completed",
@@ -104,10 +120,12 @@ class HarnessRunner:
         self.store.append_check_log(task_id, status="completed", summary=summary)
         self.bus.emit(Event(
             type=EventType.TASK_UPDATED, task_id=task_id, store_version=sv,
+            task_name=name,
             data={"status": "completed", "summary": summary, "progress": 1.0},
         ))
         self.bus.emit(Event(
             type=EventType.TASK_COMPLETED, task_id=task_id, store_version=sv,
+            task_name=name,
             data={"summary": summary, "progress": 1.0},
         ))
         return {"ok": True, "taskId": task_id, "status": "completed", "store_version": sv}
@@ -120,6 +138,7 @@ class HarnessRunner:
     ) -> dict[str, Any]:
         if not self.store.get_task(task_id):
             raise LookupError("Task not found")
+        name = self._task_name(task_id)
         sv = self.store.update_task(
             task_id,
             status="archived",
@@ -129,7 +148,7 @@ class HarnessRunner:
         self.store.append_check_log(task_id, status="archived", summary=summary)
         self.bus.emit(Event(
             type=EventType.TASK_UPDATED, task_id=task_id, store_version=sv,
-            data={"status": "archived", "summary": summary},
+            task_name=name, data={"status": "archived", "summary": summary},
         ))
         return {"ok": True, "taskId": task_id, "status": "archived", "store_version": sv}
 
@@ -139,19 +158,21 @@ class HarnessRunner:
             raise LookupError("Task not found")
         if str(task.get("status", "")).lower() != "archived":
             raise ValueError("only archived tasks can be deleted")
+        name = str(task.get("name") or "")
         sv = self.store.delete_task(task_id)
         self.bus.emit(Event(
             type=EventType.TASK_UPDATED, task_id=task_id, store_version=sv,
-            data={"deleted": True},
+            task_name=name, data={"deleted": True},
         ))
         return {"ok": True, "taskId": task_id, "store_version": sv}
 
     def _auto_pause(self, task_id: str, reason: str) -> None:
+        name = self._task_name(task_id)
         sv = self.store.update_task(task_id, status="paused", next_check_at=None, last_summary=reason)
         self.store.append_check_log(task_id, status="paused", summary=reason)
         self.bus.emit(Event(
             type=EventType.TASK_UPDATED, task_id=task_id, store_version=sv,
-            data={"status": "paused", "summary": reason},
+            task_name=name, data={"status": "paused", "summary": reason},
         ))
 
     async def _budget_limit_reason(self, task: dict[str, Any], spec: Any) -> str | None:
@@ -199,6 +220,7 @@ class HarnessRunner:
                     type=EventType.TASK_FAILED,
                     task_id=task["id"],
                     store_version=sv,
+                    task_name=str(task.get("name") or ""),
                     data={"error": str(exc), "summary": "Harness check failed"},
                 ))
 
@@ -390,6 +412,7 @@ class HarnessRunner:
             type=EventType.TASK_UPDATED,
             task_id=task_id,
             store_version=sv,
+            task_name=str(task.get("name") or ""),
             data={
                 "status": status,
                 "current_step": current_step,
@@ -399,10 +422,17 @@ class HarnessRunner:
         ))
 
         if status == "completed":
-            self.bus.emit(Event(type=EventType.TASK_COMPLETED, task_id=task_id, store_version=sv,
-                                data={"summary": summary, "progress": step_progress}))
+            self.bus.emit(Event(
+                type=EventType.TASK_COMPLETED, task_id=task_id, store_version=sv,
+                task_name=str(task.get("name") or ""),
+                data={"summary": summary, "progress": step_progress},
+            ))
         elif status == "failed":
-            self.bus.emit(Event(type=EventType.TASK_FAILED, task_id=task_id, store_version=sv, data={"summary": summary}))
+            self.bus.emit(Event(
+                type=EventType.TASK_FAILED, task_id=task_id, store_version=sv,
+                task_name=str(task.get("name") or ""),
+                data={"summary": summary},
+            ))
 
     async def _start_task(self, task: dict[str, Any]) -> None:
         task_id = task["id"]
@@ -453,6 +483,7 @@ class HarnessRunner:
                 self.bus.emit(Event(
                     type=EventType.LOG_LINE,
                     task_id=task_id,
+                    task_name=str(task.get("name") or ""),
                     data={"error": str(exc), "summary": "session abort failed"},
                 ))
 
@@ -485,6 +516,7 @@ class HarnessRunner:
         )
         self.store.append_check_log(task_id, status="running", summary=summary, detail=f"session={session_id}")
         self.bus.emit(Event(type=EventType.TASK_STARTED, task_id=task_id, store_version=sv,
+                            task_name=str(task.get("name") or ""),
                             data={"session_id": session_id, "summary": summary}))
 
     def get_task(self, task_id: str) -> dict[str, Any] | None:

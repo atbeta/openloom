@@ -5,7 +5,7 @@ from typing import Any
 
 import httpx
 
-from openloom.core.events import Event, EventType
+from openloom.core.events import Event, EventType, iso_utc
 from openloom.core.sink import Sink
 
 _logger = logging.getLogger("openloom.notify.webhook")
@@ -62,7 +62,9 @@ def _render_payload(event: Event) -> dict[str, Any]:
     return {
         "event": event.type.name,
         "task_id": event.task_id,
+        "task_name": event.task_name,
         "timestamp": event.timestamp,
+        "timestamp_iso": iso_utc(event.timestamp),
         "store_version": event.store_version,
         "data": event.data,
     }
