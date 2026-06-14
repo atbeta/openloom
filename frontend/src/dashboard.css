@@ -1287,13 +1287,13 @@ tr.clickable {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
-  padding: 0 20px 14px;
+  padding: 14px 20px;
 }
 
 .config-summary-item {
   display: flex;
-  flex-direction: column;
-  gap: 2px;
+  align-items: center;
+  gap: 8px;
   padding: 8px 10px;
   border: 1px solid var(--border-soft);
   border-radius: var(--radius-sm);
@@ -1302,17 +1302,52 @@ tr.clickable {
   overflow: hidden;
 }
 
-.config-summary-label {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--muted);
+.config-summary-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  color: var(--meta);
+  background: color-mix(in oklch, var(--meta) 12%, transparent);
 }
 
-.config-summary-value {
+.config-summary-icon-on {
+  color: var(--success);
+  background: color-mix(in oklch, var(--success) 18%, transparent);
+}
+
+.config-summary-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.config-summary-label {
   font-size: 12px;
   font-weight: 560;
   color: var(--fg);
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.config-summary-status {
+  font-size: 10px;
+  font-weight: 460;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--meta);
+  flex: 0 0 auto;
+}
+
+.config-summary-item:not(.config-summary-off) .config-summary-status {
+  color: var(--success);
 }
 
 .config-summary-detail {
@@ -1322,9 +1357,13 @@ tr.clickable {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  min-width: 0;
 }
 
-.config-summary-off .config-summary-value,
+.config-summary-off .config-summary-label {
+  color: var(--fg-2);
+}
+
 .config-summary-off .config-summary-detail {
   color: var(--meta);
 }

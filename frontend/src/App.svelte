@@ -1472,20 +1472,26 @@
         <div class="empty">No sessions or tasks yet. Use New Task in the Actions panel.</div>
       {:else}
         <div class="config-summary" role="group" aria-label="Active input and notification channels">
-          <div class="config-summary-item" class:config-summary-off={!inboxSummary.enabled} title={inboxSummary.detail}>
-            <span class="config-summary-label">Inbox</span>
-            <span class="config-summary-value">{inboxSummary.label}</span>
-            <span class="config-summary-detail">{inboxSummary.detail}</span>
+          <div class="config-summary-item" class:config-summary-off={!inboxSummary.enabled}>
+            <span class="config-summary-icon" class:config-summary-icon-on={inboxSummary.enabled}><Icon name="inbox" size={14} /></span>
+            <div class="config-summary-text">
+              <span class="config-summary-label">Inbox <span class="config-summary-status">{inboxSummary.enabled ? 'on' : 'off'}</span></span>
+              <span class="config-summary-detail">{inboxSummary.detail}</span>
+            </div>
           </div>
-          <div class="config-summary-item" class:config-summary-off={!webhookSummary.enabled} title={webhookSummary.detail}>
-            <span class="config-summary-label">Webhook</span>
-            <span class="config-summary-value">{webhookSummary.label}</span>
-            <span class="config-summary-detail">{webhookSummary.detail}</span>
+          <div class="config-summary-item" class:config-summary-off={!webhookSummary.enabled}>
+            <span class="config-summary-icon" class:config-summary-icon-on={webhookSummary.enabled}><Icon name="webhook" size={14} /></span>
+            <div class="config-summary-text">
+              <span class="config-summary-label">Webhook <span class="config-summary-status">{webhookSummary.enabled ? 'on' : 'off'}</span></span>
+              <span class="config-summary-detail">{webhookSummary.detail}</span>
+            </div>
           </div>
-          <div class="config-summary-item" class:config-summary-off={!fileNotifySummary.enabled} title={fileNotifySummary.detail}>
-            <span class="config-summary-label">File notify</span>
-            <span class="config-summary-value">{fileNotifySummary.label}</span>
-            <span class="config-summary-detail">{fileNotifySummary.detail}</span>
+          <div class="config-summary-item" class:config-summary-off={!fileNotifySummary.enabled}>
+            <span class="config-summary-icon" class:config-summary-icon-on={fileNotifySummary.enabled}><Icon name="file-text" size={14} /></span>
+            <div class="config-summary-text">
+              <span class="config-summary-label">File notify <span class="config-summary-status">{fileNotifySummary.enabled ? 'on' : 'off'}</span></span>
+              <span class="config-summary-detail">{fileNotifySummary.detail}</span>
+            </div>
           </div>
         </div>
         {#if activeTasks.length > 0}
@@ -1622,7 +1628,7 @@
             </div>
             {#if state.recentWorkspaces.length}
               <div class="composer-recents">
-                {#each state.recentWorkspaces.slice(0, 5) as workspace, idx}
+                {#each state.recentWorkspaces.slice(0, 3) as workspace, idx}
                   <button
                     type="button"
                     class="template-chip"

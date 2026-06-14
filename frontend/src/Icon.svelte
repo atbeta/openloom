@@ -36,5 +36,17 @@
     <path d="M3.5 8.5 6.5 11.5 12.5 4.5" />
   {:else if name === 'loom'}
     <path d="M2.5 5h11M2.5 8h9M2.5 11h11" />
+  {:else if name === 'inbox'}
+    <path d="M2.5 4 4 2.5h8L13.5 4v8.5L12 14H4l-1.5-1.5V4z" />
+    <path d="M2.5 9.5h3l1 1.5h3l1-1.5h3" />
+  {:else if name === 'webhook'}
+    <circle cx="5" cy="11" r="1.5" />
+    <circle cx="11" cy="11" r="1.5" />
+    <circle cx="8" cy="4" r="1.5" />
+    <path d="M6.5 10 7.5 5.5M9.5 5.5 10.5 10M6.5 11h3" />
+  {:else if name === 'file-text'}
+    <path d="M4 2.5h5l3 3V13.5L11.5 14h-7.5L4 13.5z" />
+    <path d="M9 2.5V6h3.5" />
+    <path d="M6 8.5h4M6 11h4" />
   {/if}
 </svg>
