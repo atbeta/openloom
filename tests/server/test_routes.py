@@ -550,3 +550,57 @@ def test_inbox_trigger_helper_body_session_overrides_markdown() -> None:
     )
     assert result["sessionId"] == "ses_body"
     assert captured["kwargs"]["active_session_id"] == "ses_body"
+
+
+def test_inbox_trigger_propagates_abort_flag_from_markdown() -> None:
+    """The "take over the stuck agent from home" path: a markdown
+    with ``abort: true`` and ``session: <id>`` must reach the
+    harness with the abort flag intact, so the harness's _start_task
+    will call abort_session() before send_prompt_async()."""
+    from openloom.server.routes.tasks import inbox_trigger
+
+    captured = {}
+
+    class _H:
+        def add_task(self, spec, **kwargs):
+            captured["abort"] = spec.abort_session
+            captured["active_session_id"] = kwargs.get("active_session_id")
+            return "task_xyz"
+
+    result = inbox_trigger(
+        harness=_H(),
+        parse_spec=None,
+        body={
+            "text": (
+                "# Resume after the hang\n\n"
+                "session: ses_stuck\n"
+                "abort: true\n"
+                "workspace: /tmp\n\n"
+                "## goal\nPick up from where you stopped.\n"
+            ),
+        },
+    )
+    assert result["ok"] is True
+    assert result["sessionId"] == "ses_stuck"
+    assert captured["abort"] is True
+    assert captured["active_session_id"] == "ses_stuck"
+
+
+def test_inbox_trigger_abort_defaults_false() -> None:
+    """A markdown without ``abort:`` must NOT abort — ordinary
+    inbox dispatches should be safe appends."""
+    from openloom.server.routes.tasks import inbox_trigger
+
+    captured = {}
+
+    class _H:
+        def add_task(self, spec, **kwargs):
+            captured["abort"] = spec.abort_session
+            return "task_xyz"
+
+    inbox_trigger(
+        harness=_H(),
+        parse_spec=None,
+        body={"text": "# continue\n\nsession: ses_x\nworkspace: /w\n"},
+    )
+    assert captured["abort"] is False

@@ -427,6 +427,24 @@ class HarnessRunner:
         if not prompt:
             raise ValueError("Task requires a prompt or structured plan")
 
+        # Session-bound inbox dispatch can request that the harness
+        # abort any in-flight agent loop on the target session
+        # *before* sending the new prompt — this is the "I'm home,
+        # take over the stuck agent" path. The flag is opt-in
+        # (default False) so regular watch dispatches never abort.
+        if spec.abort_session and hasattr(self.opencode, "abort_session"):
+            try:
+                await self.opencode.abort_session(session_id)
+            except Exception as exc:  # noqa: BLE001
+                # Treat abort failure as a soft signal: log via the
+                # event bus and continue with the send so the user
+                # still gets their message into the queue.
+                self.bus.emit(Event(
+                    type=EventType.LOG_LINE,
+                    task_id=task_id,
+                    data={"error": str(exc), "summary": "session abort failed"},
+                ))
+
         await self.opencode.send_prompt_async(
             session_id=session_id,
             prompt=prompt,

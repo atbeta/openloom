@@ -39,6 +39,13 @@ class TaskSpec:
     auto_accept_permissions: bool = False
     max_tokens: int | None = None
     max_runtime_minutes: int | None = None
+    # When set on a session-bound task, the harness aborts any
+    # in-flight agent loop on the target session *before* sending
+    # the new prompt. Used by the inbox / webhook dispatch path to
+    # recover from a stuck session (typically one that just fired a
+    # SESSION_STALE_BUSY notification). Default False — ordinary
+    # watch dispatches should never abort.
+    abort_session: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         data = {
@@ -53,6 +60,7 @@ class TaskSpec:
             "check_interval_seconds": self.check_interval_seconds,
             "initial_prompt": self.initial_prompt,
             "auto_accept_permissions": self.auto_accept_permissions,
+            "abort_session": self.abort_session,
         }
         if self.max_tokens is not None:
             data["max_tokens"] = self.max_tokens
@@ -78,6 +86,7 @@ class TaskSpec:
             auto_accept_permissions=bool(data.get("auto_accept_permissions", False)),
             max_tokens=_optional_positive_int(data.get("max_tokens")),
             max_runtime_minutes=_optional_positive_int(data.get("max_runtime_minutes")),
+            abort_session=bool(data.get("abort_session", False)),
         )
 
 
@@ -221,6 +230,7 @@ def _parse_yaml(text: str) -> dict[str, Any]:
 
 
 _SESSION_META_RE = re.compile(r"^session(?:\s|_id)?\s*:\s*(.+)$", re.I)
+_ABORT_META_RE = re.compile(r"^abort(?:\s+session)?\s*:\s*(.+)$", re.I)
 
 
 def extract_session_id_from_markdown(text: str) -> str:
@@ -252,24 +262,29 @@ def _parse_markdown(text: str) -> TaskSpec:
     goal = ""
     acceptance: list[str] = []
     steps: list[str] = []
+    abort_session = False
 
     meta_re = re.compile(r"^(workspace|mode|agent|check_interval(?:_seconds)?)\s*:\s*(.+)$", re.I)
     for line in lines[:20]:
         if line.startswith("# "):
             name = line[2:].strip() or name
             continue
-        m = meta_re.match(line.strip())
-        if not m:
+        stripped = line.strip()
+        m = meta_re.match(stripped)
+        if m:
+            key, value = m.group(1).lower(), m.group(2).strip()
+            if key == "workspace":
+                workspace = value.strip("` ")
+            elif key == "mode":
+                mode = value
+            elif key == "agent":
+                agent = value
+            elif key.startswith("check_interval"):
+                check_interval_seconds = _interval_from_text(value)
             continue
-        key, value = m.group(1).lower(), m.group(2).strip()
-        if key == "workspace":
-            workspace = value.strip("` ")
-        elif key == "mode":
-            mode = value
-        elif key == "agent":
-            agent = value
-        elif key.startswith("check_interval"):
-            check_interval_seconds = _interval_from_text(value)
+        m_abort = _ABORT_META_RE.match(stripped)
+        if m_abort:
+            abort_session = _truthy(m_abort.group(1))
 
     section = ""
     for line in lines:
@@ -310,7 +325,28 @@ def _parse_markdown(text: str) -> TaskSpec:
         mode=mode,
         agent=agent,
         check_interval_seconds=check_interval_seconds,
+        abort_session=abort_session,
     )
+
+
+def extract_abort_from_markdown(text: str) -> bool:
+    """Return ``True`` when the markdown frontmatter has
+    ``abort: true`` (or ``abort session: true``). Used by the
+    inbox / webhook dispatch path to abort the existing session
+    before sending a follow-up prompt. Default ``False``.
+    """
+    for line in text.splitlines()[:20]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        m = _ABORT_META_RE.match(stripped)
+        if m:
+            return _truthy(m.group(1))
+    return False
+
+
+def _truthy(raw: str) -> bool:
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
 
 def build_bootstrap_prompt(spec: TaskSpec, *, current_step: int = 0) -> str:

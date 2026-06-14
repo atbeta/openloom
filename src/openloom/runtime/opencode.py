@@ -418,6 +418,22 @@ class OpenCodeClient:
             timeout=120,
         )
 
+    async def abort_session(self, session_id: str) -> bool:
+        """Abort any in-flight agent loop on a session.
+
+        Returns ``True`` if the upstream acknowledged the abort, ``False``
+        if the session was already idle / unknown. The harness uses
+        this to release a stuck session before sending a follow-up
+        prompt via the inbox ``abort: true`` frontmatter.
+        """
+        try:
+            await self._request("POST", f"/session/{session_id}/abort")
+            return True
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code in (404, 409):
+                return False
+            raise
+
     async def complete_prompt(
         self,
         session_id: str,

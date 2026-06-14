@@ -5,7 +5,10 @@ from openloom.runtime.prompts import (
     TaskSpec,
     count_global_acceptance_checked,
     detect_progress,
+    extract_abort_from_markdown,
+    extract_session_id_from_markdown,
     normalize_check_interval_seconds,
+    parse_task_spec,
     task_is_finished,
     task_spec_from_prompt,
 )
@@ -125,3 +128,78 @@ def test_task_is_finished_without_final_checks_allows_last_step() -> None:
         step_count=2,
         acceptance_count=0,
     )
+
+
+# --- markdown frontmatter: session / abort ---
+
+
+def test_markdown_parses_session_id_frontmatter() -> None:
+    md = """# x
+session: ses_abc
+workspace: /w
+
+## goal
+Do it.
+"""
+    assert extract_session_id_from_markdown(md) == "ses_abc"
+
+
+def test_markdown_parses_session_id_underscore_alias() -> None:
+    md = "# x\n\nsession_id: ses_xyz\nworkspace: /w\n"
+    assert extract_session_id_from_markdown(md) == "ses_xyz"
+
+
+def test_markdown_abort_default_false() -> None:
+    md = """# x
+workspace: /w
+
+## goal
+Do it.
+"""
+    spec = parse_task_spec(md, "markdown")
+    assert spec.abort_session is False
+    assert extract_abort_from_markdown(md) is False
+
+
+def test_markdown_abort_true_sets_flag_on_spec() -> None:
+    md = """# Resume after the hang
+
+session: ses_abc
+abort: true
+workspace: /w
+
+## goal
+Pick up from where you stopped.
+"""
+    spec = parse_task_spec(md, "markdown")
+    assert spec.abort_session is True
+    assert extract_abort_from_markdown(md) is True
+
+
+def test_markdown_abort_session_alias_works() -> None:
+    md = "# x\n\nabort session: yes\nworkspace: /w\n"
+    spec = parse_task_spec(md, "markdown")
+    assert spec.abort_session is True
+
+
+def test_markdown_abort_false_value() -> None:
+    md = "# x\n\nabort: false\nworkspace: /w\n"
+    spec = parse_task_spec(md, "markdown")
+    assert spec.abort_session is False
+
+
+def test_taskspec_to_dict_round_trips_abort_flag() -> None:
+    spec = TaskSpec(
+        name="x", workspace="/w", goal="g", abort_session=True,
+    )
+    data = spec.to_dict()
+    assert data["abort_session"] is True
+    assert TaskSpec.from_dict(data).abort_session is True
+
+
+def test_taskspec_from_dict_default_abort_false() -> None:
+    """Pre-existing YAML specs that have no abort_session key must
+    deserialize with the flag off — a regression here would silently
+    change the behaviour of every existing openloom.yaml in the wild."""
+    spec = TaskSpec.from_dict({"name": "x", "workspace": "/w", "goal": "g"})
+    assert spec.abort_session is False
