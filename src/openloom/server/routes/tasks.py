@@ -170,6 +170,10 @@ async def full_state(
         "metrics": _status_counts(tasks, session_status),
         "usage": aggregate_usage_periods(sessions, now=time.time()),
         "now": time.time(),
+        "staleBusy": {
+            "thresholdChecks": settings.stale_busy_checks,
+            "sessionIds": list(getattr(monitor, "stale_busy_sessions", []) or []),
+        },
     }
 
 

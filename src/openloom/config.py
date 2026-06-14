@@ -23,6 +23,7 @@ class Settings:
     inbox_default_session: str = ""
     inbox_filename: str = "task.md"
     inbox_poll_interval_seconds: float = 30.0
+    stale_busy_checks: int = 10
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -60,6 +61,7 @@ class Settings:
             inbox_default_session=os.getenv("OPENLOOM_INBOX_DEFAULT_SESSION", "").strip(),
             inbox_filename=os.getenv("OPENLOOM_INBOX_FILENAME", "task.md").strip() or "task.md",
             inbox_poll_interval_seconds=poll_interval,
+            stale_busy_checks=_optional_env_int("OPENLOOM_STALE_BUSY_CHECKS") or 10,
         )
 
 

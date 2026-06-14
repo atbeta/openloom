@@ -439,6 +439,15 @@ h3 {
   background: color-mix(in oklch, var(--danger) 12%, transparent);
 }
 
+.pill-warn {
+  color: color-mix(in oklch, #d29922 92%, white);
+  border-color: color-mix(in oklch, #d29922 35%, transparent);
+  background: color-mix(in oklch, #d29922 14%, transparent);
+}
+.pill-warn .pill-dot {
+  background: #d29922;
+}
+
 .pill-done,
 .pill-src {
   color: var(--muted);

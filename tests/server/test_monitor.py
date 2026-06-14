@@ -225,3 +225,178 @@ async def test_probe_failure_does_not_crash_refresh() -> None:
     monitor = SessionMonitor(_FailingProbeClient())
     await monitor.refresh()
     assert monitor.status.get("ses_x", IDLE) == IDLE
+
+
+# --- stale-busy detection ---
+
+
+from openloom.core.events import Event, EventType  # noqa: E402
+
+
+class _BusyClient(_FakeClient):
+    """Always reports one session as busy with no message progress."""
+
+    def __init__(self, sid: str, updated: float) -> None:
+        super().__init__(
+            sessions=[_session(sid, updated=updated)],
+            status={sid: {"type": "busy"}},
+        )
+        self.messages_calls = 0
+
+    async def messages(self, session_id: str, limit: int = 20) -> list[dict[str, Any]]:
+        self.messages_calls += 1
+        # Return a single busy assistant message with no completion
+        # time so the probe path is not exercised (the session is
+        # already in the status map as busy).
+        return [{
+            "info": {
+                "role": "assistant",
+                "time": {"created": 0.0},
+                "error": None,
+            },
+            "parts": [],
+        }]
+
+
+def _capture_handler() -> tuple[list[Event], Any]:
+    captured: list[Event] = []
+
+    def handler(event: Event) -> None:
+        captured.append(event)
+
+    return captured, handler
+
+
+@pytest.mark.asyncio
+async def test_stale_busy_fires_after_threshold_consecutive_refreshes() -> None:
+    """A session stuck busy for N consecutive refreshes (with no
+    progress and no recovery) should fire SESSION_STALE_BUSY exactly
+    once, on the Nth tick."""
+    client = _BusyClient("ses_stuck", updated=time.time())
+    monitor = SessionMonitor(client, stale_busy_threshold=3)
+    captured, handler = _capture_handler()
+    monitor.on_event(handler)
+
+    for _ in range(2):
+        await monitor.refresh()
+    assert captured == [], "should not fire below the threshold"
+
+    await monitor.refresh()
+    assert len(captured) == 1, "should fire on the threshold tick"
+    assert captured[0].type is EventType.SESSION_STALE_BUSY
+    data = captured[0].data
+    assert data["session_id"] == "ses_stuck"
+    assert data["consecutive_busy_checks"] == 3
+    assert data["threshold_checks"] == 3
+    assert data["directory"] == "/tmp"
+
+    # One-shot: continued stuck ticks do not re-fire.
+    for _ in range(5):
+        await monitor.refresh()
+    assert len(captured) == 1
+    assert "ses_stuck" in monitor.stale_busy_sessions
+
+
+@pytest.mark.asyncio
+async def test_stale_busy_rearms_after_session_recovers() -> None:
+    """Once a session goes idle (or shows new progress), the
+    one-shot latch releases so a future stuck episode can fire again."""
+    client = _BusyClient("ses_recovers", updated=time.time())
+    monitor = SessionMonitor(client, stale_busy_threshold=2)
+    captured, handler = _capture_handler()
+    monitor.on_event(handler)
+
+    # Episode 1: get stuck for 2 ticks
+    await monitor.refresh()
+    await monitor.refresh()
+    assert len(captured) == 1
+
+    # Recovery: upstream now reports idle. The 12s BUSY_HOLD keeps
+    # monitor.status['busy'] for cosmetic reasons, but the stale
+    # tracker should release its one-shot latch so a future stuck
+    # episode can fire again.
+    client._status = {"ses_recovers": {"type": "idle"}}
+    await monitor.refresh()
+    assert "ses_recovers" not in monitor.stale_busy_sessions
+    assert monitor._stale_fired == set()
+
+    # Episode 2: stuck again, should re-fire
+    client._status = {"ses_recovers": {"type": "busy"}}
+    await monitor.refresh()
+    await monitor.refresh()
+    stale = [e for e in captured if e.type is EventType.SESSION_STALE_BUSY]
+    assert len(stale) == 2
+
+
+@pytest.mark.asyncio
+async def test_stale_busy_resets_when_new_message_completes() -> None:
+    """A session that is busy in the status map but whose latest
+    message has a fresh ``completed`` timestamp is making real
+    progress — the counter must reset, not accumulate."""
+    class _ProgressClient(_BusyClient):
+        def __init__(self) -> None:
+            super().__init__("ses_making_progress", updated=time.time())
+            self.last_completed = time.time()  # advances each call
+
+        async def messages(self, session_id: str, limit: int = 20) -> list[dict[str, Any]]:
+            self.last_completed += 1.0
+            return [{
+                "info": {
+                    "role": "assistant",
+                    "time": {"created": 0, "completed": self.last_completed},
+                    "error": None,
+                },
+                "parts": [],
+            }]
+
+    client = _ProgressClient()
+    monitor = SessionMonitor(client, stale_busy_threshold=3)
+    captured, handler = _capture_handler()
+    monitor.on_event(handler)
+
+    for _ in range(10):
+        await monitor.refresh()
+    # Despite 10 ticks, the message-completion timestamps advanced
+    # each time → counter never crosses the threshold.
+    assert captured == []
+
+
+@pytest.mark.asyncio
+async def test_stale_busy_works_when_status_map_omits_session() -> None:
+    """The probe path (session absent from /session/status) must
+    also feed the stale-busy counter, since that's how OpenCode
+    1.16.2 reports an actively-running session whose tool is busy."""
+    busy_message = {
+        "info": {
+            "role": "assistant",
+            "time": {"created": 0.0},  # no completed key
+            "error": None,
+        },
+        "parts": [
+            {
+                "type": "tool",
+                "state": {"status": "running"},
+            },
+        ],
+    }
+
+    class _ProbeBusyClient(_FakeClient):
+        def __init__(self) -> None:
+            super().__init__(
+                sessions=[_session("ses_probe", updated=time.time())],
+                status={},  # upstream reports nothing
+            )
+
+        async def messages(self, session_id: str, limit: int = 20) -> list[dict[str, Any]]:
+            return [busy_message]
+
+    client = _ProbeBusyClient()
+    monitor = SessionMonitor(client, stale_busy_threshold=2)
+    captured, handler = _capture_handler()
+    monitor.on_event(handler)
+
+    await monitor.refresh()
+    await monitor.refresh()
+    stale = [e for e in captured if e.type is EventType.SESSION_STALE_BUSY]
+    assert len(stale) == 1
+    assert stale[0].data["session_id"] == "ses_probe"

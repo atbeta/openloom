@@ -5,6 +5,7 @@
 
   let state = $state({
     server: { ok: false, url: '', message: 'loading' },
+    staleBusy: { thresholdChecks: 10, sessionIds: [] },
     recentWorkspaces: [],
     tasks: [],
     sessions: [],
@@ -1235,6 +1236,14 @@
         <span class={`pill ${state.server.ok ? 'pill-ok' : 'pill-fail'}`}>
           <span class="pill-dot"></span>{state.server.ok ? 'Healthy' : 'Unavailable'}
         </span>
+        {#if state.staleBusy?.sessionIds?.length}
+          <span
+            class="pill pill-warn"
+            title={`Stuck for >{state.staleBusy.thresholdChecks} checks: ${state.staleBusy.sessionIds.join(', ')}`}
+          >
+            <span class="pill-dot"></span>{state.staleBusy.sessionIds.length} stuck
+          </span>
+        {/if}
       </div>
       <div class="main-tabs">
         <button type="button" class="main-tab" class:active={mainView === 'dashboard'} onclick={() => (mainView = 'dashboard')}>Dashboard</button>

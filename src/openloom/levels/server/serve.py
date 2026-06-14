@@ -47,7 +47,10 @@ async def run_serve(
             file=sys.stderr,
         )
 
-    monitor = SessionMonitor(client)
+    monitor = SessionMonitor(
+        client, stale_busy_threshold=settings.stale_busy_checks,
+    )
+    monitor.on_event(bus.emit)
 
     await monitor.refresh()
 
