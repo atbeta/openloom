@@ -180,10 +180,11 @@
     const dir = ib.directory || '?';
     const poll = ib.pollIntervalSeconds != null ? `${Math.round(ib.pollIntervalSeconds)}s poll` : '';
     const file = ib.filename ? `${ib.filename}` : '';
+    const session = ib.defaultSession ? `session:${ib.defaultSession.slice(0, 12)}` : '';
     return {
       enabled: true,
       label: 'Watching',
-      detail: `${dir} · ${file}${poll ? ` · ${poll}` : ''}`,
+      detail: `${dir} · ${file}${poll ? ` · ${poll}` : ''}${session ? ` · ${session}` : ''}`,
     };
   });
 

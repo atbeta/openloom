@@ -120,12 +120,18 @@ def _build_inbox_factory(settings: Settings) -> Any:
 
         async def inbox_dispatch(payload: dict[str, Any]) -> str | None:
             spec_dict = {k: v for k, v in payload.items() if not k.startswith("_")}
-            return harness.add_task(TaskSpec.from_dict(spec_dict))
+            session_id = str(payload.get("_session_id") or "").strip()
+            return harness.add_task(
+                TaskSpec.from_dict(spec_dict),
+                active_session_id=session_id or None,
+                session_ids=[session_id] if session_id else None,
+            )
 
         watcher = InboxWatcher(
             directory=settings.inbox_dir,
             dispatch=inbox_dispatch,
             default_workspace=settings.inbox_default_workspace,
+            default_session_id=settings.inbox_default_session,
             filename=settings.inbox_filename,
             poll_interval_seconds=settings.inbox_poll_interval_seconds,
         )

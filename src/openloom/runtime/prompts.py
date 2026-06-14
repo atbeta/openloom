@@ -220,6 +220,28 @@ def _parse_yaml(text: str) -> dict[str, Any]:
     return data
 
 
+_SESSION_META_RE = re.compile(r"^session(?:\s|_id)?\s*:\s*(.+)$", re.I)
+
+
+def extract_session_id_from_markdown(text: str) -> str:
+    """Return the ``session: <id>`` (or ``session_id: <id>``) value from
+    the first 20 lines of a markdown task spec, or an empty string.
+
+    Lives in ``runtime.prompts`` because it operates on the same
+    frontmatter the markdown parser already handles; both the
+    inbox watcher and the ``/api/inbox/trigger`` HTTP route need
+    it, and ``runtime`` is the shared layer the others import.
+    """
+    for line in text.splitlines()[:20]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        m = _SESSION_META_RE.match(stripped)
+        if m:
+            return m.group(1).strip().strip("`\"' ")
+    return ""
+
+
 def _parse_markdown(text: str) -> TaskSpec:
     lines = text.splitlines()
     name = "Untitled task"

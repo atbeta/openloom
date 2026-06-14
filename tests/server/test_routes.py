@@ -460,8 +460,9 @@ def test_inbox_trigger_helper_uses_default_workspace() -> None:
     captured = {}
 
     class _H:
-        def add_task(self, spec):
+        def add_task(self, spec, **kwargs):
             captured["workspace"] = spec.workspace
+            captured["kwargs"] = kwargs
             return "task_xyz"
 
     result = inbox_trigger(
@@ -474,3 +475,78 @@ def test_inbox_trigger_helper_uses_default_workspace() -> None:
     )
     assert result["ok"] is True
     assert captured["workspace"] == "/srv/loop"
+    # No session binding requested: kwargs carry explicit None so the
+    # harness knows the spec is unbound.
+    assert captured["kwargs"] == {
+        "active_session_id": None,
+        "session_ids": None,
+    }
+    assert result["sessionId"] is None
+
+
+def test_inbox_trigger_helper_forwards_session_id_from_body() -> None:
+    from openloom.server.routes.tasks import inbox_trigger
+
+    captured = {}
+
+    class _H:
+        def add_task(self, spec, **kwargs):
+            captured["kwargs"] = kwargs
+            return "task_xyz"
+
+    result = inbox_trigger(
+        harness=_H(),
+        parse_spec=None,
+        body={
+            "text": "# hello\n\nworkspace: /w\n",
+            "sessionId": "ses_abc",
+        },
+    )
+    assert result["ok"] is True
+    assert result["sessionId"] == "ses_abc"
+    assert captured["kwargs"] == {
+        "active_session_id": "ses_abc",
+        "session_ids": ["ses_abc"],
+    }
+
+
+def test_inbox_trigger_helper_reads_session_from_markdown() -> None:
+    from openloom.server.routes.tasks import inbox_trigger
+
+    captured = {}
+
+    class _H:
+        def add_task(self, spec, **kwargs):
+            captured["kwargs"] = kwargs
+            return "task_xyz"
+
+    result = inbox_trigger(
+        harness=_H(),
+        parse_spec=None,
+        body={"text": "# hello\n\nsession: ses_md\nworkspace: /w\n"},
+    )
+    assert result["ok"] is True
+    assert result["sessionId"] == "ses_md"
+    assert captured["kwargs"]["active_session_id"] == "ses_md"
+
+
+def test_inbox_trigger_helper_body_session_overrides_markdown() -> None:
+    from openloom.server.routes.tasks import inbox_trigger
+
+    captured = {}
+
+    class _H:
+        def add_task(self, spec, **kwargs):
+            captured["kwargs"] = kwargs
+            return "task_xyz"
+
+    result = inbox_trigger(
+        harness=_H(),
+        parse_spec=None,
+        body={
+            "text": "# hello\n\nsession: ses_md\nworkspace: /w\n",
+            "sessionId": "ses_body",
+        },
+    )
+    assert result["sessionId"] == "ses_body"
+    assert captured["kwargs"]["active_session_id"] == "ses_body"

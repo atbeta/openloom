@@ -129,6 +129,7 @@ async def full_state(
             "directory": str(settings.inbox_dir),
             "filename": settings.inbox_filename,
             "pollIntervalSeconds": settings.inbox_poll_interval_seconds,
+            "defaultSession": settings.inbox_default_session or None,
         }
 
     webhooks: list[dict[str, Any]] = []
@@ -222,13 +223,24 @@ def inbox_trigger(
       {"path": "/abs/file.md"}    read this file from disk and parse
                                    it; equivalent to the watcher
                                    consuming it.
+      {"sessionId": "ses_..."}    attach the new task to an existing
+                                   OpenCode session id; the task will
+                                   be appended to that session's
+                                   transcript instead of starting a
+                                   new one. Markdown frontmatter
+                                   ``session: <id>`` takes precedence
+                                   when both are present.
+      {"defaultWorkspace": "..."} fallback workspace for markdown
+                                   payloads that omit the
+                                   ``workspace:`` frontmatter.
 
     Returns the same shape as the file-watcher's tick: task id + the
     parsed spec name. Errors return 400 with a message.
     """
     from openloom.runtime.prompts import parse_task_spec
 
-    default_workspace = (body.get("default_workspace") or "").strip()
+    default_workspace = (body.get("default_workspace") or body.get("defaultWorkspace") or "").strip()
+    body_session_id = (body.get("session_id") or body.get("sessionId") or "").strip()
 
     text = body.get("text")
     path = body.get("path")
@@ -256,11 +268,22 @@ def inbox_trigger(
     if not spec.workspace:
         raise ValueError("workspace is required (set 'workspace:' in markdown, or pass default_workspace)")
 
-    task_id = harness.add_task(spec)
+    session_id = body_session_id
+    if not session_id:
+        from openloom.runtime.prompts import extract_session_id_from_markdown
+
+        session_id = extract_session_id_from_markdown(text)
+
+    task_id = harness.add_task(
+        spec,
+        active_session_id=session_id or None,
+        session_ids=[session_id] if session_id else None,
+    )
     return {
         "ok": True,
         "taskId": task_id,
         "name": spec.name,
         "status": "pending",
         "source": "path" if path is not None else "text",
+        "sessionId": session_id or None,
     }

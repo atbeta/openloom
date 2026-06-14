@@ -7,14 +7,29 @@ from typing import Any
 _logger = logging.getLogger("openloom.inbox.parsing")
 
 
-def parse_path(path: Path, default_workspace: str) -> dict[str, Any] | None:
+def parse_path(
+    path: Path,
+    default_workspace: str,
+    default_session_id: str = "",
+) -> dict[str, Any] | None:
     """Parse a single markdown file into a spec dict, or return ``None`` on skip.
 
     The ``try/except`` blocks live here (not in ``__init__.py``) so the
     project's architecture contract forbidding ``try: import`` in
     initialiser files is satisfied.
+
+    Session binding: if the markdown frontmatter contains a
+    ``session: <id>`` (or ``session_id: <id>``) line, that session is
+    attached to the dispatched task. Otherwise the
+    ``default_session_id`` arg is used. The chosen id is stashed on
+    the payload as ``_session_id`` so the dispatch caller can hand it
+    to ``harness.add_task``; it is stripped from the spec dict
+    because ``TaskSpec`` does not model session binding.
     """
-    from openloom.runtime.prompts import parse_task_spec
+    from openloom.runtime.prompts import (
+        extract_session_id_from_markdown,
+        parse_task_spec,
+    )
 
     try:
         text = path.read_text(encoding="utf-8")
@@ -34,6 +49,10 @@ def parse_path(path: Path, default_workspace: str) -> dict[str, Any] | None:
             path.name,
         )
         return None
+
+    session_id = extract_session_id_from_markdown(text) or default_session_id.strip()
     data = spec.to_dict()
     data["_inbox_path"] = str(path)
+    if session_id:
+        data["_session_id"] = session_id
     return data

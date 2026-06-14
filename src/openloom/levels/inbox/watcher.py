@@ -36,12 +36,14 @@ class InboxWatcher:
         dispatch: DispatchFn,
         *,
         default_workspace: str = "",
+        default_session_id: str = "",
         filename: str = "task.md",
         poll_interval_seconds: float = 30.0,
     ) -> None:
         self._directory = Path(directory)
         self._dispatch = dispatch
         self._default_workspace = default_workspace
+        self._default_session_id = default_session_id
         self._filename = filename.strip() or "task.md"
         self._poll_interval_seconds = max(1.0, float(poll_interval_seconds))
 
@@ -71,7 +73,7 @@ class InboxWatcher:
         path = self.target_path
         if not path.is_file():
             return False
-        payload = parse_path(path, self._default_workspace)
+        payload = parse_path(path, self._default_workspace, self._default_session_id)
         if payload is None:
             self._rename_error(path, "parse-failed")
             return False

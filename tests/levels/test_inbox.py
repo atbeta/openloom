@@ -132,6 +132,70 @@ async def test_default_workspace_fills_in(tmp_path: Path) -> None:
     assert captured[0]["workspace"] == "/srv/default"
 
 
+SESSION_MD = """# Continue the build
+
+session: ses_abc123def456
+workspace: /home/me/projects/house
+
+## goal
+Pick up where we left off.
+"""
+
+
+async def test_session_id_from_markdown_frontmatter(tmp_path: Path) -> None:
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    (inbox / "task.md").write_text(SESSION_MD)
+    captured: list[dict[str, Any]] = []
+    watcher = _make_watcher(inbox, _make_capturing_dispatch(captured))
+    await watcher.tick()
+    assert captured[0]["_session_id"] == "ses_abc123def456"
+    # session id is a dispatch concern, never lands on the spec itself
+    assert "session_id" not in captured[0]
+    assert "session" not in captured[0]
+
+
+async def test_session_id_underscore_alias_works(tmp_path: Path) -> None:
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    md = "# x\n\nsession_id: ses_zx\nworkspace: /w\n"
+    (inbox / "task.md").write_text(md)
+    captured: list[dict[str, Any]] = []
+    watcher = _make_watcher(inbox, _make_capturing_dispatch(captured))
+    await watcher.tick()
+    assert captured[0]["_session_id"] == "ses_zx"
+
+
+async def test_default_session_id_used_when_frontmatter_absent(tmp_path: Path) -> None:
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    (inbox / "task.md").write_text(MINIMAL_MD)
+    captured: list[dict[str, Any]] = []
+    watcher = InboxWatcher(
+        directory=inbox,
+        dispatch=_make_capturing_dispatch(captured),
+        default_workspace="/srv",
+        default_session_id="ses_default",
+    )
+    await watcher.tick()
+    assert captured[0]["_session_id"] == "ses_default"
+
+
+async def test_markdown_session_overrides_default(tmp_path: Path) -> None:
+    inbox = tmp_path / "inbox"
+    inbox.mkdir()
+    (inbox / "task.md").write_text(SESSION_MD)
+    captured: list[dict[str, Any]] = []
+    watcher = InboxWatcher(
+        directory=inbox,
+        dispatch=_make_capturing_dispatch(captured),
+        default_workspace="/srv",
+        default_session_id="ses_default",
+    )
+    await watcher.tick()
+    assert captured[0]["_session_id"] == "ses_abc123def456"
+
+
 async def test_missing_workspace_marks_error(tmp_path: Path) -> None:
     inbox = tmp_path / "inbox"
     inbox.mkdir()

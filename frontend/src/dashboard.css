@@ -783,11 +783,6 @@ tr.clickable {
   background: transparent;
   transition: color 0.12s ease;
 }
-.composer-add::before {
-  content: '+';
-  color: var(--accent);
-  font-weight: 500;
-}
 .composer-add:hover {
   color: var(--fg-2);
   background: transparent;
