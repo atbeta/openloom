@@ -122,6 +122,29 @@ async def full_state(
         except Exception:
             permissions = []
 
+    inbox: dict[str, Any] = {"enabled": False}
+    if settings.inbox_dir is not None:
+        inbox = {
+            "enabled": True,
+            "directory": str(settings.inbox_dir),
+            "filename": settings.inbox_filename,
+            "pollIntervalSeconds": settings.inbox_poll_interval_seconds,
+        }
+
+    webhooks: list[dict[str, Any]] = []
+    for wh in settings.notify.webhooks:
+        webhooks.append({
+            "url": wh.url,
+            "events": sorted(wh.events),
+        })
+    files: list[dict[str, Any]] = []
+    for fe in settings.notify.files:
+        files.append({
+            "directory": str(fe.directory),
+            "prefix": fe.prefix,
+            "events": sorted(fe.events),
+        })
+
     return {
         "server": {
             "ok": health.ok, "message": health.message,
@@ -141,6 +164,8 @@ async def full_state(
         "sessionStatus": session_status,
         "sessionError": session_error,
         "permissions": permissions,
+        "inbox": inbox,
+        "notify": {"webhooks": webhooks, "files": files},
         "metrics": _status_counts(tasks, session_status),
         "usage": aggregate_usage_periods(sessions, now=time.time()),
         "now": time.time(),

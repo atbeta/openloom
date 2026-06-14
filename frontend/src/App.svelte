@@ -12,6 +12,8 @@
     archivedSessions: [],
     sessionStatus: {},
     permissions: [],
+    inbox: { enabled: false },
+    notify: { webhooks: [], files: [] },
     metrics: { running: 0, waiting: 0, failed: 0, completedToday: 0, sessionsBusy: 0, sessionsIdle: 0, sessionsRetry: 0 },
     usage: {
       periods: {
@@ -169,6 +171,47 @@
 
   const activeTasks = $derived((state.tasks || []).filter((task) => task.status !== 'archived'));
   const archivedTasks = $derived((state.tasks || []).filter((task) => task.status === 'archived'));
+
+  const inboxSummary = $derived.by(() => {
+    const ib = state.inbox;
+    if (!ib || !ib.enabled) {
+      return { enabled: false, label: 'Off', detail: 'OPENLOOM_INBOX_DIR not set' };
+    }
+    const dir = ib.directory || '?';
+    const poll = ib.pollIntervalSeconds != null ? `${Math.round(ib.pollIntervalSeconds)}s poll` : '';
+    const file = ib.filename ? `${ib.filename}` : '';
+    return {
+      enabled: true,
+      label: 'Watching',
+      detail: `${dir} · ${file}${poll ? ` · ${poll}` : ''}`,
+    };
+  });
+
+  const webhookSummary = $derived.by(() => {
+    const list = state.notify?.webhooks || [];
+    if (list.length === 0) {
+      return { enabled: false, label: 'Off', detail: 'no webhook configured' };
+    }
+    const wh = list[0];
+    return {
+      enabled: true,
+      label: `${list.length} webhook${list.length === 1 ? '' : 's'}`,
+      detail: wh.url,
+    };
+  });
+
+  const fileNotifySummary = $derived.by(() => {
+    const list = state.notify?.files || [];
+    if (list.length === 0) {
+      return { enabled: false, label: 'Off', detail: 'no file sink configured' };
+    }
+    const fe = list[0];
+    return {
+      enabled: true,
+      label: `${list.length} file sink${list.length === 1 ? '' : 's'}`,
+      detail: `${fe.directory} · ${fe.prefix}-*`,
+    };
+  });
 
   const selectedTask = $derived(
     drawerTask || state.tasks.find((task) => task.id === selectedTaskId) || null
@@ -1428,6 +1471,23 @@
       {:else if state.tasks.length === 0 && state.sessions.length === 0}
         <div class="empty">No sessions or tasks yet. Use New Task in the Actions panel.</div>
       {:else}
+        <div class="config-summary" role="group" aria-label="Active input and notification channels">
+          <div class="config-summary-item" class:config-summary-off={!inboxSummary.enabled} title={inboxSummary.detail}>
+            <span class="config-summary-label">Inbox</span>
+            <span class="config-summary-value">{inboxSummary.label}</span>
+            <span class="config-summary-detail">{inboxSummary.detail}</span>
+          </div>
+          <div class="config-summary-item" class:config-summary-off={!webhookSummary.enabled} title={webhookSummary.detail}>
+            <span class="config-summary-label">Webhook</span>
+            <span class="config-summary-value">{webhookSummary.label}</span>
+            <span class="config-summary-detail">{webhookSummary.detail}</span>
+          </div>
+          <div class="config-summary-item" class:config-summary-off={!fileNotifySummary.enabled} title={fileNotifySummary.detail}>
+            <span class="config-summary-label">File notify</span>
+            <span class="config-summary-value">{fileNotifySummary.label}</span>
+            <span class="config-summary-detail">{fileNotifySummary.detail}</span>
+          </div>
+        </div>
         {#if activeTasks.length > 0}
           <div class="group">
             <div class="group-head"><span class="group-title">Tasks</span><span class="group-count">{activeTasks.length}</span></div>

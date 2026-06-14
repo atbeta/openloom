@@ -1282,3 +1282,55 @@ tr.clickable {
     grid-template-columns: 1fr;
   }
 }
+
+.config-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  padding: 0 20px 14px;
+}
+
+.config-summary-item {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  min-width: 0;
+  overflow: hidden;
+}
+
+.config-summary-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--muted);
+}
+
+.config-summary-value {
+  font-size: 12px;
+  font-weight: 560;
+  color: var(--fg);
+}
+
+.config-summary-detail {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--fg-2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.config-summary-off .config-summary-value,
+.config-summary-off .config-summary-detail {
+  color: var(--meta);
+}
+
+@media (max-width: 900px) {
+  .config-summary {
+    grid-template-columns: 1fr;
+  }
+}
