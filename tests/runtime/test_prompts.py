@@ -77,8 +77,11 @@ def test_detect_progress_does_not_complete_on_step_done_with_final_checks() -> N
         steps=["a", "b", "c"],
         acceptance=["pytest passes"],
     )
-    progress = detect_progress("STEP DONE: 3\n   - [x] step item done", spec)
-    assert progress["step_done"] == 3
+    # Agent reported only STEP DONE: 2 — not all 3 steps, and no
+    # TASK COMPLETE marker. Task is NOT finished.
+    progress = detect_progress("STEP DONE: 2\n   - [x] step item done", spec)
+    assert progress["step_done"] == 2
+    assert progress["task_complete"] is False
     assert progress["acceptance_checked"] == 0
     assert not task_is_finished(
         task_complete=progress["task_complete"],
@@ -89,14 +92,33 @@ def test_detect_progress_does_not_complete_on_step_done_with_final_checks() -> N
     )
 
 
-def test_task_is_finished_requires_global_when_configured() -> None:
-    assert not task_is_finished(
-        task_complete=False,
+def test_task_complete_with_unchecked_acceptance_still_finishes() -> None:
+    """Regression: when the agent reports ``TASK COMPLETE`` but does
+    not restate every acceptance item with ``- [x]``, the task must
+    still transition to ``completed``. Acceptance is shown on the
+    dashboard via ``acceptance_progress``; it does not gate completion.
+    Without this rule the harness re-prompts ``Waiting on final
+    checks`` forever and the agent gets stuck in a nudge loop.
+    """
+    assert task_is_finished(
+        task_complete=True,
         step_done=3,
         acceptance_checked=0,
         step_count=3,
+        acceptance_count=4,
+    )
+
+
+def test_task_is_finished_requires_global_when_configured() -> None:
+    # Not all steps reported AND not TASK COMPLETE -> not finished.
+    assert not task_is_finished(
+        task_complete=False,
+        step_done=2,
+        acceptance_checked=1,
+        step_count=3,
         acceptance_count=1,
     )
+    # All steps reported (and acceptance checked) -> finished.
     assert task_is_finished(
         task_complete=False,
         step_done=3,
@@ -104,6 +126,7 @@ def test_task_is_finished_requires_global_when_configured() -> None:
         step_count=3,
         acceptance_count=1,
     )
+    # task_complete=True regardless of acceptance -> finished.
     assert task_is_finished(
         task_complete=True,
         step_done=1,
@@ -111,7 +134,7 @@ def test_task_is_finished_requires_global_when_configured() -> None:
         step_count=3,
         acceptance_count=1,
     )
-    assert not task_is_finished(
+    assert task_is_finished(
         task_complete=True,
         step_done=1,
         acceptance_checked=0,
@@ -273,15 +296,14 @@ def test_detect_progress_same_turn_multi_step_done_with_task_done() -> None:
     progress = detect_progress(text, spec)
     assert progress["task_complete"] is True
     assert progress["step_done"] == 3
+    # Acceptance is still unchecked, but ``task_complete`` is the
+    # source of truth — the task is finished regardless.
     assert task_is_finished(
         task_complete=progress["task_complete"],
         step_done=progress["step_done"],
         acceptance_checked=progress["acceptance_checked"],
         step_count=3, acceptance_count=1,
-    ) is False  # acceptance is "x" not yet checked
-    # But once the acceptance check is ticked, the same turn would
-    # close the task. The fix targets the marker detection, not
-    # the acceptance logic.
+    ) is True
 
 
 # --- assistant_message_signature + nudge dedup ---

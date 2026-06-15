@@ -496,13 +496,29 @@ def task_is_finished(
     step_count: int,
     acceptance_count: int,
 ) -> bool:
-    all_steps_reported = step_count > 0 and step_done >= step_count
-    has_final = acceptance_count > 0
-    global_ok = not has_final or acceptance_checked >= acceptance_count
+    """Decide whether the task should be marked ``completed``.
 
-    if has_final:
-        return global_ok and (task_complete or all_steps_reported)
-    return task_complete or all_steps_reported
+    The harness uses this to decide between nudging the agent and
+    transitioning the task to ``completed``. The rule is intentionally
+    simple: **when the agent explicitly reports ``TASK COMPLETE`` the
+    task is finished.**
+
+    Background: the original code also required
+    ``acceptance_checked >= acceptance_count`` whenever the spec had
+    an ``## acceptance`` block. That breaks the common LLM behaviour
+    of completing all the work and reporting ``TASK COMPLETE`` in a
+    single final message without restating every acceptance item
+    with a ``- [x]`` checkbox. The harness would then re-prompt with
+    ``Waiting on final checks`` forever, the agent would reply
+    ``TASK COMPLETE`` again, and the cycle never resolved. The
+    acceptance block is still parsed and surfaced in the dashboard
+    (``result.acceptance_progress``); it just does not gate the
+    completion transition.
+    """
+    if task_complete:
+        return True
+    all_steps_reported = step_count > 0 and step_done >= step_count
+    return all_steps_reported
 
 
 def detect_progress(text: str, spec: TaskSpec) -> dict[str, Any]:
