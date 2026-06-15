@@ -90,6 +90,32 @@ class SessionMonitor:
         """IDs of sessions currently counted as stuck, for the dashboard badge."""
         return [sid for sid, n in self._stale_count.items() if n >= self._stale_busy_threshold]
 
+    def forget_session(self, session_id: str) -> None:
+        """Drop all per-session state when the owning task is
+        archived, auto-paused, or otherwise taken off the
+        session. Without this, a session whose only OpenLoom
+        task was archived would still appear in
+        :attr:`stale_busy_sessions` and the dashboard's "N
+        stuck" pill would never go away until the upstream
+        OpenCode server stopped listing the session entirely
+        (which never happens for a session that is genuinely
+        busy — i.e. a hung agent).
+
+        The upstream cleanup in :meth:`refresh` only fires when
+        the session is missing from OpenCode's
+        ``list_sessions``; for sessions that are still alive
+        there, the only signal that they should be released is
+        this explicit drop.
+        """
+        if not session_id:
+            return
+        self._status.pop(session_id, None)
+        self._last_busy_at.pop(session_id, None)
+        self._latest_progress_at.pop(session_id, None)
+        self._stale_count.pop(session_id, None)
+        self._stale_fired.discard(session_id)
+        self._last_messages.pop(session_id, None)
+
     async def refresh(self) -> None:
         try:
             sessions = await self.client.list_sessions()

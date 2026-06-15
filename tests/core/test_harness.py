@@ -481,3 +481,115 @@ def test_store_list_active_tasks_for_session_filters_terminal(tmp_path: Path) ->
 
     # An unknown session is simply empty.
     assert store.list_active_tasks_for_session("ses_nope") == []
+
+
+# --- session-dropped callback (wired to monitor.forget_session) ---
+
+
+def test_session_dropped_fires_on_archive(tmp_path: Path) -> None:
+    client = _RecordingOpencode()
+    harness = _make_harness_with(tmp_path, client)
+    spec = prompts.TaskSpec(name="A", workspace="/tmp/ws", goal="g")
+    dropped: list[str] = []
+    harness.on_session_dropped(dropped.append)
+
+    tid = harness.add_task(spec, active_session_id="ses_attached")
+    asyncio.run(harness._start_task(harness.store.get_task(tid)))
+    harness.archive_task(tid)
+    assert dropped == ["ses_attached"]
+
+
+def test_session_dropped_fires_on_pause(tmp_path: Path) -> None:
+    client = _RecordingOpencode()
+    harness = _make_harness_with(tmp_path, client)
+    spec = prompts.TaskSpec(name="A", workspace="/tmp/ws", goal="g")
+    dropped: list[str] = []
+    harness.on_session_dropped(dropped.append)
+
+    tid = harness.add_task(spec, active_session_id="ses_attached")
+    asyncio.run(harness._start_task(harness.store.get_task(tid)))
+    harness.pause_task(tid)
+    assert dropped == ["ses_attached"]
+
+
+def test_session_dropped_fires_on_complete(tmp_path: Path) -> None:
+    client = _RecordingOpencode()
+    harness = _make_harness_with(tmp_path, client)
+    spec = prompts.TaskSpec(name="A", workspace="/tmp/ws", goal="g")
+    dropped: list[str] = []
+    harness.on_session_dropped(dropped.append)
+
+    tid = harness.add_task(spec, active_session_id="ses_attached")
+    asyncio.run(harness._start_task(harness.store.get_task(tid)))
+    harness.complete_task(tid)
+    assert dropped == ["ses_attached"]
+
+
+def test_session_dropped_fires_on_auto_pause(tmp_path: Path) -> None:
+    client = _RecordingOpencode()
+    harness = _make_harness_with(tmp_path, client)
+    spec = prompts.TaskSpec(name="A", workspace="/tmp/ws", goal="g")
+    dropped: list[str] = []
+    harness.on_session_dropped(dropped.append)
+
+    tid = harness.add_task(spec, active_session_id="ses_attached")
+    asyncio.run(harness._start_task(harness.store.get_task(tid)))
+    harness._auto_pause(tid, "budget exceeded")
+    assert dropped == ["ses_attached"]
+
+
+def test_session_dropped_does_not_fire_for_tasks_without_session(tmp_path: Path) -> None:
+    """Tasks with no active_session_id emit a '' drop, which
+    the callback short-circuits on. We assert the callback
+    never receives a non-empty id for these tasks."""
+    client = _RecordingOpencode()
+    harness = _make_harness_with(tmp_path, client)
+    spec = prompts.TaskSpec(name="A", workspace="/tmp", goal="g")
+    dropped: list[str] = []
+    harness.on_session_dropped(dropped.append)
+
+    tid = harness.add_task(spec)  # no session
+    harness.archive_task(tid)
+    # No session-bound task → handler should not be invoked.
+    assert dropped == []
+
+
+def test_session_dropped_does_not_fire_on_auto_archive_replaced(tmp_path: Path) -> None:
+    """The auto-archive path runs *because* a new task is
+    taking over the same session. We must NOT drop the
+    monitor state for that session — the new task will be
+    the observer within microseconds of the old task's
+    archive, and dropping the monitor state would race with
+    the new task's registration."""
+    client = _RecordingOpencode()
+    harness = _make_harness_with(tmp_path, client)
+    spec_a = prompts.TaskSpec(name="A", workspace="/tmp/ws", goal="g")
+    spec_b = prompts.TaskSpec(name="B", workspace="/tmp/ws", goal="g")
+    dropped: list[str] = []
+    harness.on_session_dropped(dropped.append)
+
+    a = harness.add_task(spec_a, active_session_id="ses_attached")
+    asyncio.run(harness._start_task(harness.store.get_task(a)))
+    harness.add_task(spec_b, active_session_id="ses_attached")
+    assert dropped == []
+
+
+def test_session_dropped_handler_failure_does_not_block(tmp_path: Path) -> None:
+    """A handler raising must not stop other handlers from
+    firing, and must not block the harness API call."""
+    client = _RecordingOpencode()
+    harness = _make_harness_with(tmp_path, client)
+    spec = prompts.TaskSpec(name="A", workspace="/tmp/ws", goal="g")
+
+    def bad_handler(_: str) -> None:
+        raise RuntimeError("boom")
+
+    good: list[str] = []
+    harness.on_session_dropped(bad_handler)
+    harness.on_session_dropped(good.append)
+
+    tid = harness.add_task(spec, active_session_id="ses_attached")
+    asyncio.run(harness._start_task(harness.store.get_task(tid)))
+    # archive_task must complete despite bad_handler raising.
+    harness.archive_task(tid)
+    assert good == ["ses_attached"]

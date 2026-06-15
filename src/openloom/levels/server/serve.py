@@ -52,6 +52,14 @@ async def run_serve(
     )
     monitor.on_event(bus.emit)
     monitor.attach_prompts(prompts, recent_n=settings.notify_recent_messages)
+    # When a task is taken off a session (manual archive,
+    # manual pause / complete, or auto-pause for budget), the
+    # monitor should drop its per-session state — otherwise
+    # the "N stuck" pill on the dashboard would outlive the
+    # task that owns the session, since the upstream
+    # session list cleanup only fires when OpenCode itself
+    # forgets the session.
+    harness.on_session_dropped(monitor.forget_session)
 
     await monitor.refresh()
 

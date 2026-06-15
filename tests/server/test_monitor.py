@@ -400,3 +400,98 @@ async def test_stale_busy_works_when_status_map_omits_session() -> None:
     stale = [e for e in captured if e.type is EventType.SESSION_STALE_BUSY]
     assert len(stale) == 1
     assert stale[0].data["session_id"] == "ses_probe"
+
+
+# --- forget_session: release per-session state on task drop ---
+
+
+@pytest.mark.asyncio
+async def test_forget_session_clears_all_per_session_state() -> None:
+    """A session whose owning task was archived / paused /
+    completed must drop out of stale_busy_sessions on the next
+    property read. Without this, the dashboard 'N stuck' pill
+    outlives the task that owns the session because the
+    upstream-cleanup branch only fires when OpenCode itself
+    forgets the session."""
+    client = _BusyClient("ses_stuck", updated=time.time())
+    monitor = SessionMonitor(client, stale_busy_threshold=2)
+    captured, handler = _capture_handler()
+    monitor.on_event(handler)
+
+    # Drive the counter to threshold so the session is 'stuck'.
+    await monitor.refresh()
+    await monitor.refresh()
+    assert monitor.stale_busy_sessions == ["ses_stuck"]
+    assert "ses_stuck" in monitor._stale_fired
+
+    # The owning task is now archived — drop the session.
+    monitor.forget_session("ses_stuck")
+
+    assert monitor.stale_busy_sessions == []
+    assert "ses_stuck" not in monitor._stale_fired
+    # All per-session dicts are empty.
+    assert monitor._status == {}
+    assert monitor._last_busy_at == {}
+    assert monitor._stale_count == {}
+    assert monitor._latest_progress_at == {}
+    assert monitor._last_messages == {}
+
+
+@pytest.mark.asyncio
+async def test_forget_session_then_resume_re_fires_correctly() -> None:
+    """After forget_session, if the same session id appears
+    again in OpenCode's list with a busy status, the counter
+    must start from 0 (not from the previous threshold) so the
+    next stuck episode can re-fire."""
+    client = _BusyClient("ses_recover", updated=time.time())
+    monitor = SessionMonitor(client, stale_busy_threshold=2)
+    captured, handler = _capture_handler()
+    monitor.on_event(handler)
+
+    await monitor.refresh()
+    await monitor.refresh()
+    assert len([e for e in captured if e.type is EventType.SESSION_STALE_BUSY]) == 1
+    monitor.forget_session("ses_recover")
+    assert monitor._stale_count == {}
+
+    # Re-attach: same session id, but the latch has been
+    # released so a new stuck episode can fire.
+    await monitor.refresh()
+    await monitor.refresh()
+    stale = [e for e in captured if e.type is EventType.SESSION_STALE_BUSY]
+    assert len(stale) == 2
+
+
+@pytest.mark.asyncio
+async def test_forget_session_idempotent_for_unknown_session() -> None:
+    """Calling forget_session with an id we never tracked must
+    be a no-op (it has to be safe to wire on every drop
+    without a prior membership check)."""
+    monitor = SessionMonitor(_FakeClient(sessions=[], status={}))
+    monitor.forget_session("ses_never_seen")
+    monitor.forget_session("")
+    assert monitor.stale_busy_sessions == []
+
+
+@pytest.mark.asyncio
+async def test_forget_session_does_not_clear_other_sessions() -> None:
+    """Dropping one session must not perturb the stuck counter
+    of another session that is independently stuck."""
+
+    class _TwoSessions(_FakeClient):
+        def __init__(self) -> None:
+            super().__init__(
+                sessions=[
+                    _session("ses_a", updated=time.time()),
+                    _session("ses_b", updated=time.time()),
+                ],
+                status={"ses_a": {"type": "busy"}, "ses_b": {"type": "busy"}},
+            )
+
+    monitor = SessionMonitor(_TwoSessions(), stale_busy_threshold=2)
+    await monitor.refresh()
+    await monitor.refresh()
+    assert set(monitor.stale_busy_sessions) == {"ses_a", "ses_b"}
+
+    monitor.forget_session("ses_a")
+    assert monitor.stale_busy_sessions == ["ses_b"]

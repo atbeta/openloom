@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import logging
 import time
 import uuid
+from collections.abc import Callable
 from typing import Any
 
 from .events import Event, EventBus, EventType
@@ -14,6 +16,8 @@ from .protocols import (
     StorePort,
 )
 from .store import new_task_record
+
+_logger = logging.getLogger("openloom.harness")
 
 
 class HarnessRunner:
@@ -39,6 +43,34 @@ class HarnessRunner:
         self.max_task_tokens = max_task_tokens
         self.max_task_runtime_minutes = max_task_runtime_minutes
         self.notify_recent_messages = max(1, int(notify_recent_messages))
+        # Callbacks fired when a task is taken off its session
+        # (manual archive, auto-archive from a session-bound
+        # take-over, auto-pause for budget). The session monitor
+        # uses this to drop per-session stale-busy state so a
+        # dashboard "N stuck" pill does not outlive the task
+        # that owns the session.
+        self._session_dropped_handlers: list[Callable[[str], None]] = []
+
+    def on_session_dropped(
+        self, handler: Callable[[str], None],
+    ) -> None:
+        """Register a callback invoked when a session is
+        released (no OpenLoom task observes it any more). The
+        argument is the session id. Handlers are best-effort:
+        a handler raising does not stop the others."""
+        self._session_dropped_handlers.append(handler)
+
+    def _notify_session_dropped(self, session_id: str) -> None:
+        if not session_id:
+            return
+        for handler in self._session_dropped_handlers:
+            try:
+                handler(session_id)
+            except Exception:  # noqa: BLE001
+                _logger.exception(
+                    "session-dropped handler %r failed for %s",
+                    handler, session_id,
+                )
 
     def _task_name(self, task_id: str) -> str:
         """Look up the human-readable task name. Best-effort: the
@@ -152,14 +184,17 @@ class HarnessRunner:
         ))
 
     def pause_task(self, task_id: str) -> dict[str, Any]:
-        if not self.store.get_task(task_id):
+        task = self.store.get_task(task_id)
+        if not task:
             raise LookupError("Task not found")
-        name = self._task_name(task_id)
+        name = str(task.get("name") or "")
+        session_id = str(task.get("active_session_id") or "")
         sv = self.store.update_task(task_id, status="paused", next_check_at=None)
         self.bus.emit(Event(
             type=EventType.TASK_UPDATED, task_id=task_id, store_version=sv,
             task_name=name, data={"status": "paused"},
         ))
+        self._notify_session_dropped(session_id)
         return {"ok": True, "taskId": task_id, "status": "paused", "store_version": sv}
 
     def resume_task(self, task_id: str) -> dict[str, Any]:
@@ -179,9 +214,11 @@ class HarnessRunner:
         *,
         summary: str = "Marked complete manually",
     ) -> dict[str, Any]:
-        if not self.store.get_task(task_id):
+        task = self.store.get_task(task_id)
+        if not task:
             raise LookupError("Task not found")
-        name = self._task_name(task_id)
+        name = str(task.get("name") or "")
+        session_id = str(task.get("active_session_id") or "")
         sv = self.store.update_task(
             task_id,
             status="completed",
@@ -200,6 +237,7 @@ class HarnessRunner:
             task_name=name,
             data={"summary": summary, "progress": 1.0},
         ))
+        self._notify_session_dropped(session_id)
         return {"ok": True, "taskId": task_id, "status": "completed", "store_version": sv}
 
     def archive_task(
@@ -208,9 +246,11 @@ class HarnessRunner:
         *,
         summary: str = "Archived manually",
     ) -> dict[str, Any]:
-        if not self.store.get_task(task_id):
+        task = self.store.get_task(task_id)
+        if not task:
             raise LookupError("Task not found")
-        name = self._task_name(task_id)
+        name = str(task.get("name") or "")
+        session_id = str(task.get("active_session_id") or "")
         sv = self.store.update_task(
             task_id,
             status="archived",
@@ -222,6 +262,7 @@ class HarnessRunner:
             type=EventType.TASK_UPDATED, task_id=task_id, store_version=sv,
             task_name=name, data={"status": "archived", "summary": summary},
         ))
+        self._notify_session_dropped(session_id)
         return {"ok": True, "taskId": task_id, "status": "archived", "store_version": sv}
 
     def delete_task(self, task_id: str) -> dict[str, Any]:
@@ -239,13 +280,18 @@ class HarnessRunner:
         return {"ok": True, "taskId": task_id, "store_version": sv}
 
     def _auto_pause(self, task_id: str, reason: str) -> None:
-        name = self._task_name(task_id)
+        task = self.store.get_task(task_id)
+        if not task:
+            return
+        session_id = str(task.get("active_session_id") or "")
+        name = str(task.get("name") or "")
         sv = self.store.update_task(task_id, status="paused", next_check_at=None, last_summary=reason)
         self.store.append_check_log(task_id, status="paused", summary=reason)
         self.bus.emit(Event(
             type=EventType.TASK_UPDATED, task_id=task_id, store_version=sv,
             task_name=name, data={"status": "paused", "summary": reason},
         ))
+        self._notify_session_dropped(session_id)
 
     async def _budget_limit_reason(self, task: dict[str, Any], spec: Any) -> str | None:
         max_runtime = spec.max_runtime_minutes or self.max_task_runtime_minutes
