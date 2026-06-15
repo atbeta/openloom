@@ -249,3 +249,78 @@ def test_check_task_does_not_nudge_when_agent_reported_complete(tmp_path: Path) 
     )
     summary = completed_event.data.get("summary", "")
     assert "Periodic check" not in summary
+
+
+def test_check_task_completes_when_agent_reports_task_complete_without_step_done(
+    tmp_path: Path,
+) -> None:
+    """Regression: when the agent reports ``TASK COMPLETE`` in a single
+    final assistant message (without first saying ``STEP DONE: <n>`` for
+    every step), the harness must still mark the task completed.
+
+    Scenario: agent did the work, did not restate every ``STEP DONE:``
+    checkpoint, and closed the turn with a single ``TASK COMPLETE``.
+    The spec has an ``## acceptance`` block but the agent did not
+    rewrite the ``- [x]`` checkboxes. The previous code routed this to
+    ``Waiting on final checks`` and nudged the agent forever; the agent
+    would reply ``TASK COMPLETE`` again, the next tick would re-detect
+    it, and we'd never close the task. After the fix
+    ``task_is_finished`` trusts ``task_complete`` as the source of
+    truth, so the task transitions to ``completed`` on this tick.
+    """
+    harness, task_id = _make_running_task(tmp_path)
+    # _make_running_task builds a spec with one step and no acceptance;
+    # override the stored spec so this test mirrors the real bug
+    # (acceptance block present, agent says TASK COMPLETE only).
+    spec_with_final = {
+        "name": "Demo with final checks",
+        "workspace": "/tmp",
+        "goal": "Finish something",
+        "steps": ["do the thing", "report back"],
+        "acceptance": [
+            "deliverable exists on disk",
+            "smoke test passes",
+        ],
+    }
+    harness.store.update_task(
+        task_id, **{"spec": spec_with_final, "current_step": 0, "completed_steps": []}
+    )
+
+    class _AgentSaysTaskCompleteOnly(_TaskCompleteOpencode):
+        async def messages(self, session_id: str, limit: int = 50) -> list[dict[str, Any]]:
+            return [{
+                "info": {
+                    "role": "assistant",
+                    "time": {"created": 1.0, "completed": 2.0},
+                },
+                "parts": [
+                    {"type": "text", "text": "All done. TASK COMPLETE"},
+                ],
+            }]
+
+    harness.opencode = _AgentSaysTaskCompleteOnly()  # type: ignore[assignment]
+    client: Any = harness.opencode
+    events: list[Any] = []
+    harness.bus.subscribe_all(events.append)
+
+    asyncio.run(harness._check_task(harness.store.get_task(task_id)))
+
+    # No nudges were sent — the agent already reported TASK COMPLETE.
+    assert client.send_calls == [], (
+        f"expected no nudges, got {client.send_calls!r}"
+    )
+
+    # Task transitioned to completed and TASK_COMPLETED was emitted.
+    assert harness.store.get_task(task_id)["status"] == "completed"
+    types = [e.type for e in events]
+    assert EventType.TASK_COMPLETED in types
+
+    # And the completed summary made it to the event payload — not
+    # the "Waiting on final checks" or "Periodic check" summary.
+    completed_event = next(
+        e for e in events if e.type == EventType.TASK_COMPLETED
+    )
+    summary = completed_event.data.get("summary", "")
+    assert "Waiting on final checks" not in summary
+    assert "Periodic check" not in summary
+    assert "TASK COMPLETE" in summary or "All steps appear complete" in summary

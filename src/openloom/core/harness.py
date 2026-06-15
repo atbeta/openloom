@@ -281,8 +281,6 @@ class HarnessRunner:
             or progress_step > max_done_at_start
             or progress_step > max(current_step, max_done_at_start)
         )
-        all_steps_reported = len(spec.steps) > 0 and result.step_done >= len(spec.steps)
-        has_final = bool(spec.acceptance)
         task_finished = self.prompts.task_is_finished(
             task_complete=result.task_complete,
             step_done=result.step_done,
@@ -338,9 +336,6 @@ class HarnessRunner:
                 step_name = spec.steps[min(current_step, len(spec.steps) - 1)] if spec.steps else None
                 nudge = self.prompts.auto_decide_reply(step_name=step_name)
                 summary = "Auto-decided: proceed without confirmation"
-            elif has_final and all_steps_reported and result.acceptance_checked < len(spec.acceptance):
-                nudge = self.prompts.build_final_checks_nudge(spec)
-                summary = "Waiting on final checks"
             elif (
                 result.step_done > 0
                 and result.step_done not in completed_steps
