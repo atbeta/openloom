@@ -58,6 +58,19 @@ The dispatch entry points look for these in priority order:
 3. `OPENLOOM_INBOX_DEFAULT_SESSION` environment variable
 4. *no session* — OpenLoom creates one and the task runs in a fresh transcript
 
+## Single-writer per session
+
+Dispatching a second task to a session that already has a live task auto-archives the prior one. The two tasks would otherwise race on the session's transcript — `STEP DONE: 1` from one task would pollute the other task's progress check, and the older task could be falsely marked completed by the newer task's last turn.
+
+The auto-archive flow:
+
+1. `add_task` looks up `active_session_id` in the store and finds any task with `status in {pending, running, waiting}`.
+2. Each such task is moved to `status="archived"` with `last_summary="Superseded by a new task on session <id>"`.
+3. A `TASK_UPDATED` event is emitted with `data.replaced_by_session=<id>` so a webhook handler can render a "task was taken over" badge.
+4. The new task's spec carries `replaced_task_ids=[...]` (also surfaced in the `TASK_CREATED` and subsequent `TASK_UPDATED` / `TASK_COMPLETED` / `TASK_FAILED` payloads) so dashboards can show the chain of handovers.
+
+This is the same semantic as the abort-and-resume flow (see below) but without the agent loop reset — useful when you simply want to redirect work to the same session, not restart it. To restart the agent loop *and* replace the prior task, use `abort: true` in the markdown.
+
 ## Abort and resume
 
 When a session has been busy for `OPENLOOM_STALE_BUSY_CHECKS` consecutive checks with no new completed message (the [stale-busy](notifications.md#session_stale_busy) detector), a `SESSION_STALE_BUSY` event is emitted. The typical recovery from a phone or remote shell:

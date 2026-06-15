@@ -43,6 +43,8 @@ All sinks receive the same JSON shape:
     "summary": "Agent reported TASK COMPLETE",
     "step_done": 3,
     "step_count": 3,
+    "active_session_id": "ses_abc",
+    "replaced_task_ids": [],
     "recent_activity": [
       {
         "text": "All three steps are now green.",
@@ -68,6 +70,16 @@ All sinks receive the same JSON shape:
 The list is the right size to fit in a Slack or Discord webhook payload even when the agent is mid-investigation: ~3 KB per event. Tool input is JSON-serialised so file paths and command snippets survive intact, and the truncation is marked with `…` so the receiver can tell the input was clipped.
 
 The field is best-effort: harness events emitted from the periodic check path include it; rare paths that do not have access to the message log (the manual `pause_task` / `complete_task` API calls, the catch-all `tick()` exception handler, and `TASK_CREATED` / `TASK_STARTED` / `LOG_LINE`) omit it. The shape is always a JSON list, possibly empty.
+
+### Session binding and task handovers
+
+Two fields on `data` make session-bound dispatch observable to a webhook handler:
+
+| Field | When | Meaning |
+|-------|------|---------|
+| `active_session_id` | `TASK_UPDATED`, `TASK_COMPLETED`, `TASK_FAILED`, `TASK_STARTED` | The OpenCode session this task is bound to. Always present on events emitted from the check path; `null` for a task with no session binding. |
+| `replaced_task_ids` | `TASK_CREATED`, `TASK_UPDATED`, `TASK_COMPLETED`, `TASK_FAILED` | List of task ids that this task superseded. Populated when the new task was dispatched to a session that already had a live task — those prior tasks were auto-archived so the new one is the sole observer of the session. Empty (or absent) when no takeover happened. |
+| `replaced_by_session` | `TASK_UPDATED` (auto-archive event) | Set on the TASK_UPDATED that flips the *archived* task to `status=archived`. The session id of the new task that took over. The receiving end can show a "task was taken over" badge using the archived task's id and this field. |
 
 For session-level events, `task_id` is `""` and the subject lives in `data`:
 

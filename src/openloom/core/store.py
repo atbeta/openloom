@@ -178,6 +178,24 @@ class Store:
             ).fetchall()
         return [self._row_to_task(row) for row in rows]
 
+    def list_active_tasks_for_session(
+        self, session_id: str,
+    ) -> list[dict[str, Any]]:
+        """Return every non-terminal task currently bound to
+        ``session_id`` (status in pending/running/waiting). Used
+        by the harness when a new task is dispatched to a session
+        that already has live work — those tasks are auto-archived
+        so the new one can take over without transcript-level
+        step-acknowledgement collision."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM tasks WHERE active_session_id = ?"
+                " AND status IN ('pending', 'running', 'waiting')"
+                " ORDER BY created_at ASC",
+                (session_id,),
+            ).fetchall()
+        return [self._row_to_task(row) for row in rows]
+
     def append_check_log(self, task_id: str, *, status: str, summary: str, detail: str = "") -> int:
         with self._lock:
             row = self._conn.execute("SELECT check_log_json FROM tasks WHERE id = ?", (task_id,)).fetchone()

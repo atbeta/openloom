@@ -324,3 +324,160 @@ def test_check_task_completes_when_agent_reports_task_complete_without_step_done
     assert "Waiting on final checks" not in summary
     assert "Periodic check" not in summary
     assert "TASK COMPLETE" in summary or "All steps appear complete" in summary
+
+
+# --- session-bound dispatch: auto-archive + replaced_task_ids ---
+
+
+def test_add_task_to_busy_session_archives_prior_task(tmp_path: Path) -> None:
+    """Dispatching a new task to a session that already has a
+    live task should archive the prior one, not race on the
+    session transcript. The new task's spec carries
+    replaced_task_ids so consumers can render the takeover."""
+    client = _RecordingOpencode()
+    harness = _make_harness_with(tmp_path, client)
+    spec_old = prompts.TaskSpec(name="First", workspace="/tmp/ws", goal="g1")
+    spec_new = prompts.TaskSpec(name="Second", workspace="/tmp/ws", goal="g2")
+
+    # Manually move the first task into 'running' with the
+    # session bound — that's the state add_task will see when
+    # looking for active tasks to archive.
+    old_id = harness.add_task(spec_old, active_session_id="ses_attached")
+    asyncio.run(harness._start_task(harness.store.get_task(old_id)))
+
+    # Now dispatch the second task to the same session.
+    new_id = harness.add_task(spec_new, active_session_id="ses_attached")
+
+    old = harness.store.get_task(old_id)
+    new = harness.store.get_task(new_id)
+    assert old is not None and old["status"] == "archived"
+    assert new is not None
+    assert new["spec"].get("replaced_task_ids") == [old_id]
+
+
+def test_add_task_to_idle_session_does_not_archive(tmp_path: Path) -> None:
+    """If no live task claims the session, the new task simply
+    attaches without a takeover — no archive, no
+    replaced_task_ids annotation."""
+    client = _RecordingOpencode()
+    harness = _make_harness_with(tmp_path, client)
+    spec = prompts.TaskSpec(name="Solo", workspace="/tmp/ws", goal="g")
+
+    tid = harness.add_task(spec, active_session_id="ses_attached")
+    task = harness.store.get_task(tid)
+    assert task is not None
+    assert task["status"] == "pending"
+    assert "replaced_task_ids" not in task["spec"]
+
+
+def test_add_task_to_free_session_has_no_replaced_task_ids(tmp_path: Path) -> None:
+    """When nothing was replaced, the spec omits the key (None /
+    missing). Downstream consumers do
+    ``list(spec_data.get("replaced_task_ids") or [])`` so a
+    missing key behaves identically to an empty list."""
+    client = _RecordingOpencode()
+    harness = _make_harness_with(tmp_path, client)
+    spec = prompts.TaskSpec(name="Plain", workspace="/tmp/ws", goal="g")
+
+    tid = harness.add_task(spec, active_session_id="ses_attached")
+    new = harness.store.get_task(tid)
+    assert new["spec"].get("replaced_task_ids") in (None, [])
+
+
+def test_add_task_no_session_does_not_archive_anything(tmp_path: Path) -> None:
+    """Tasks without an active_session_id are solo — they each
+    get their own session, so no archive should happen."""
+    client = _RecordingOpencode()
+    harness = _make_harness_with(tmp_path, client)
+    spec = prompts.TaskSpec(name="A", workspace="/tmp", goal="a")
+    spec_b = prompts.TaskSpec(name="B", workspace="/tmp", goal="b")
+
+    a_id = harness.add_task(spec)
+    b_id = harness.add_task(spec_b)
+    a = harness.store.get_task(a_id)
+    b = harness.store.get_task(b_id)
+    assert a["status"] == "pending"
+    assert b["status"] == "pending"
+    assert b["spec"].get("replaced_task_ids") in (None, [])
+
+
+def test_auto_archive_emits_task_updated_with_replaced_by_session(tmp_path: Path) -> None:
+    """The auto-archive must emit an event so a webhook handler
+    can show 'task was taken over'."""
+    client = _RecordingOpencode()
+    bus = EventBus()
+    store = Store(tmp_path / "store.sqlite3")
+    harness = HarnessRunner(
+        opencode=client, bus=bus, store=store,
+        checker=get_checker("string")(),
+        prompts=prompts, status=session_status,
+    )
+    events: list[Any] = []
+    bus.subscribe_all(events.append)
+    spec_old = prompts.TaskSpec(name="Old", workspace="/tmp/ws", goal="g")
+    spec_new = prompts.TaskSpec(name="New", workspace="/tmp/ws", goal="g")
+
+    old_id = harness.add_task(spec_old, active_session_id="ses_attached")
+    asyncio.run(harness._start_task(harness.store.get_task(old_id)))
+    events.clear()
+
+    new_id = harness.add_task(spec_new, active_session_id="ses_attached")
+    updates = [e for e in events if e.type == EventType.TASK_UPDATED]
+    # The first TASK_UPDATED after the new dispatch should be
+    # the archive event for the old task.
+    assert updates[0].task_id == old_id
+    assert updates[0].data["status"] == "archived"
+    assert updates[0].data["replaced_by_session"] == "ses_attached"
+    assert updates[0].data["active_session_id"] == "ses_attached"
+    # The TASK_CREATED for the new task must carry the
+    # replaced_task_ids list so the UI can render a badge.
+    created = [e for e in events if e.type == EventType.TASK_CREATED]
+    assert created[0].task_id == new_id
+    assert created[0].data["replaced_task_ids"] == [old_id]
+    assert created[0].data["active_session_id"] == "ses_attached"
+
+
+def test_store_list_active_tasks_for_session_filters_terminal(tmp_path: Path) -> None:
+    """The store helper only returns pending/running/waiting
+    tasks — completed/failed/archived are excluded so the
+    auto-archive logic doesn't re-archive an already-finished
+    task by accident."""
+    store = Store(tmp_path / "store.sqlite3")
+    # Two tasks on the same session, but they must coexist
+    # artificially — the harness would normally auto-archive
+    # the first when the second is added, so we use the store
+    # directly to set up the test fixture.
+    a_record = {
+        "id": "task_a", "name": "a", "workspace": "/w",
+        "spec": {"name": "a", "workspace": "/w", "goal": "g"},
+        "status": "pending", "current_step": 0, "completed_steps": [],
+        "idle_checks": 0, "progress": 0.0,
+        "check_interval_seconds": 300, "next_check_at": 0.0,
+        "active_session_id": "ses_x", "session_ids": ["ses_x"],
+        "last_summary": None, "error": None, "check_log": [],
+        "created_at": 1.0, "updated_at": 1.0, "last_check_at": None,
+    }
+    b_record = dict(a_record)
+    b_record["id"] = "task_b"
+    b_record["name"] = "b"
+    b_record["spec"] = {"name": "b", "workspace": "/w", "goal": "g"}
+    b_record["status"] = "pending"
+    b_record["created_at"] = 2.0
+    b_record["updated_at"] = 2.0
+    store.create_task(a_record)
+    store.create_task(b_record)
+
+    # Both pending → both active for the session.
+    live = store.list_active_tasks_for_session("ses_x")
+    assert {t["id"] for t in live} == {"task_a", "task_b"}
+
+    # Mark b completed → only a remains.
+    store.update_task("task_b", status="completed", next_check_at=None)
+    assert {t["id"] for t in store.list_active_tasks_for_session("ses_x")} == {"task_a"}
+
+    # Mark a archived → empty.
+    store.update_task("task_a", status="archived", next_check_at=None)
+    assert store.list_active_tasks_for_session("ses_x") == []
+
+    # An unknown session is simply empty.
+    assert store.list_active_tasks_for_session("ses_nope") == []

@@ -63,11 +63,34 @@ class HarnessRunner:
         if not hasattr(spec, "to_dict"):
             spec = self.prompts.TaskSpec.from_dict(spec)
 
+        # Session-bound dispatch is single-writer per session. If
+        # another live task already claims this session id, we
+        # auto-archive it so the new task is the only observer of
+        # the session's transcript — otherwise the two tasks
+        # would race on STEP DONE markers in the same conversation
+        # and the older task's progress would be poisoned by the
+        # newer one. The auto-archive is recorded in the new
+        # task's spec as ``replaced_task_ids`` so downstream
+        # consumers (UI, webhook handlers) can render a "this
+        # task took over from <id>" badge if they want to.
+        replaced_task_ids: list[str] = []
+        if active_session_id:
+            existing = self.store.list_active_tasks_for_session(active_session_id)
+            for old in existing:
+                old_id = old.get("id")
+                if not old_id:
+                    continue
+                replaced_task_ids.append(old_id)
+                self._auto_archive_replaced(old_id, active_session_id, task_name=str(old.get("name") or ""))
+
         task_id = task_id or f"task_{uuid.uuid4().hex[:12]}"
+        spec_dict = spec.to_dict()
+        if replaced_task_ids:
+            spec_dict["replaced_task_ids"] = replaced_task_ids
         task = new_task_record(
             task_id=task_id,
             name=spec.name,
-            spec=spec.to_dict(),
+            spec=spec_dict,
             workspace=spec.workspace,
             check_interval_seconds=spec.check_interval_seconds,
             active_session_id=active_session_id,
@@ -78,8 +101,55 @@ class HarnessRunner:
 
         self.bus.emit(Event(type=EventType.TASK_CREATED, task_id=task_id, store_version=sv,
                             task_name=spec.name,
-                            data={"spec": spec.to_dict(), "workspace": spec.workspace}))
+                            data={
+                                "spec": spec_dict, "workspace": spec.workspace,
+                                "replaced_task_ids": replaced_task_ids,
+                                "active_session_id": active_session_id or None,
+                            }))
         return task_id
+
+    def _auto_archive_replaced(
+        self,
+        task_id: str,
+        session_id: str,
+        *,
+        task_name: str,
+    ) -> None:
+        """Mark a task ``archived`` so the new dispatch is the sole
+        observer of ``session_id``. Emits a TASK_UPDATED with a
+        ``replaced_by`` annotation so webhook handlers can show
+        a "task was taken over" link. We do not emit TASK_FAILED
+        or TASK_COMPLETED because the task did not fail or finish
+        — it was just superseded, which is a different lifecycle
+        event in spirit. The ``replaced_by`` data field is the
+        only signal; consumers that don't know about it just
+        see a normal status=archived transition.
+        """
+        reason = f"Superseded by a new task on session {session_id[:12]}"
+        try:
+            sv = self.store.update_task(
+                task_id,
+                status="archived",
+                next_check_at=None,
+                last_summary=reason,
+            )
+        except Exception:
+            return
+        self.store.append_check_log(
+            task_id, status="archived", summary=reason, detail=f"replaced_by_session={session_id}",
+        )
+        self.bus.emit(Event(
+            type=EventType.TASK_UPDATED,
+            task_id=task_id,
+            store_version=sv,
+            task_name=task_name,
+            data={
+                "status": "archived",
+                "summary": reason,
+                "replaced_by_session": session_id,
+                "active_session_id": session_id,
+            },
+        ))
 
     def pause_task(self, task_id: str) -> dict[str, Any]:
         if not self.store.get_task(task_id):
@@ -244,6 +314,11 @@ class HarnessRunner:
             return
 
         spec = self.prompts.TaskSpec.from_dict(spec_data)
+        # Specs created by add_task with a session that already
+        # had a live task carry a list of the task ids they
+        # superseded. Surface it on every emit so consumers can
+        # render a "took over from <id>" affordance.
+        replaced_task_ids = list(spec_data.get("replaced_task_ids") or [])
 
         budget_reason = await self._budget_limit_reason(task, spec)
         if budget_reason:
@@ -427,6 +502,8 @@ class HarnessRunner:
                 "progress": step_progress,
                 "summary": summary,
                 "recent_activity": recent_activity,
+                "active_session_id": session_id,
+                "replaced_task_ids": replaced_task_ids,
             },
         ))
 
@@ -438,6 +515,8 @@ class HarnessRunner:
                     "summary": summary,
                     "progress": step_progress,
                     "recent_activity": recent_activity,
+                    "active_session_id": session_id,
+                    "replaced_task_ids": replaced_task_ids,
                 },
             ))
         elif status == "failed":
@@ -447,6 +526,8 @@ class HarnessRunner:
                 data={
                     "summary": summary,
                     "recent_activity": recent_activity,
+                    "active_session_id": session_id,
+                    "replaced_task_ids": replaced_task_ids,
                 },
             ))
 
