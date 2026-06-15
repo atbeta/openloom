@@ -138,3 +138,114 @@ def test_start_task_skips_abort_when_flag_not_set(tmp_path: Path) -> None:
     method_sequence = [c[0] for c in client.calls]
     assert "abort" not in method_sequence
     assert method_sequence == ["send"]
+
+
+# --- Periodic-check / task-finished regression tests -----------------------
+
+class _TaskCompleteOpencode:
+    """Stub that simulates an agent which has just replied with
+    ``TASK COMPLETE``. The harness must transition the task to
+    ``completed`` and emit ``TASK_COMPLETED`` — but it must NOT
+    re-prompt the agent with a periodic-check nudge asking the
+    agent to confirm completion again. That re-prompt loop is the
+    bug this test guards against."""
+
+    def __init__(self) -> None:
+        self.send_calls: list[tuple[str, str, Any]] = []
+
+    async def list_sessions(self) -> list[dict[str, Any]]:
+        return []
+
+    async def session_status(self) -> dict[str, Any]:
+        # Idle session — not running, not waiting, no error.
+        return {"ses_a": {"type": "session", "status": {"type": "idle"}}}
+
+    async def messages(self, session_id: str, limit: int = 50) -> list[dict[str, Any]]:
+        # A single assistant message that says TASK COMPLETE.
+        return [{
+            "info": {
+                "role": "assistant",
+                "time": {"created": 1.0, "completed": 2.0},
+            },
+            "parts": [
+                {"type": "text", "text": "All done. TASK COMPLETE"},
+            ],
+        }]
+
+    async def resolve_session_permissions(self, session_id: str, auto: bool) -> dict[str, Any] | None:
+        return None
+
+    async def send_prompt_async(
+        self, session_id: str, prompt: str, agent: str | None = None,
+    ) -> None:
+        self.send_calls.append((session_id, prompt, agent))
+
+
+def _make_running_task(tmp_path: Path) -> tuple[HarnessRunner, str]:
+    """Create a task already in 'running' state with an active session.
+
+    The harness short-circuits ``_check_task`` early for tasks that
+    are pending / paused / completed / failed / archived, so we have
+    to seed the store with a 'running' task directly to exercise the
+    task-finished branch.
+    """
+    from openloom.core.store import new_task_record
+    store = Store(tmp_path / "store.sqlite3")
+    rec = new_task_record(
+        task_id="task_done",
+        name="Demo",
+        spec={
+            "name": "Demo",
+            "workspace": "/tmp",
+            "goal": "Finish something",
+            "steps": ["do the thing"],
+        },
+        workspace="/tmp",
+        check_interval_seconds=300,
+        active_session_id="ses_a",
+    )
+    rec["status"] = "running"
+    store.create_task(rec)
+    bus = EventBus()
+    harness = HarnessRunner(
+        opencode=_TaskCompleteOpencode(),
+        bus=bus,
+        store=store,
+        checker=get_checker("string")(),
+        prompts=prompts,
+        status=session_status,
+    )
+    return harness, "task_done"
+
+
+def test_check_task_does_not_nudge_when_agent_reported_complete(tmp_path: Path) -> None:
+    """Regression: harness must NOT re-send a periodic-check nudge
+    after the agent has already replied with ``TASK COMPLETE``.
+    Before the fix the same task got a fresh ``Periodic check —
+    requested status confirmation`` nudge on every tick, even
+    though ``task_is_finished`` already evaluated to True."""
+    harness, task_id = _make_running_task(tmp_path)
+    client: Any = harness.opencode  # type: ignore[assignment]
+    events: list[Any] = []
+    harness.bus.subscribe_all(events.append)
+
+    asyncio.run(harness._check_task(harness.store.get_task(task_id)))
+
+    # No nudges were sent — the agent had already said TASK COMPLETE.
+    assert client.send_calls == [], (
+        f"expected no nudges, got {client.send_calls!r}"
+    )
+
+    # Task is now completed, and TASK_COMPLETED was emitted.
+    assert harness.store.get_task(task_id)["status"] == "completed"
+    types = [e.type for e in events]
+    assert EventType.TASK_COMPLETED in types
+
+    # And the completed summary made it to the event payload — not
+    # the periodic-check summary, which is what the buggy code path
+    # produced.
+    completed_event = next(
+        e for e in events if e.type == EventType.TASK_COMPLETED
+    )
+    summary = completed_event.data.get("summary", "")
+    assert "Periodic check" not in summary

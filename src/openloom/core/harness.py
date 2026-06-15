@@ -307,7 +307,15 @@ class HarnessRunner:
         elif task_finished:
             status = "completed"
             summary = "Agent reported TASK COMPLETE" if result.task_complete else "All steps appear complete"
-        else:
+        elif not task_finished:
+            # Note: gating on ``not task_finished`` here is what stops the
+            # harness from re-prompting an agent that has already reported
+            # TASK COMPLETE. Without this guard the next ``else`` branch
+            # below would call ``build_periodic_check_prompt`` and ask the
+            # agent to confirm completion again, even though we just
+            # marked the task ``completed`` above. The agent would reply
+            # with TASK COMPLETE, the next tick would re-detect it, and
+            # we'd keep nudging in a tight loop.
             status = "running"
             summary = "Session idle — verifying progress"
             agent_name: str | None = None if spec.agent == "opencode" else spec.agent
