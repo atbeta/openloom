@@ -28,6 +28,7 @@ class HarnessRunner:
         *,
         max_task_tokens: int | None = None,
         max_task_runtime_minutes: int | None = None,
+        notify_recent_messages: int = 3,
     ) -> None:
         self.opencode: OpenCodePort = opencode
         self.bus: EventBus = bus
@@ -37,6 +38,7 @@ class HarnessRunner:
         self.status: StatusPort = status
         self.max_task_tokens = max_task_tokens
         self.max_task_runtime_minutes = max_task_runtime_minutes
+        self.notify_recent_messages = max(1, int(notify_recent_messages))
 
     def _task_name(self, task_id: str) -> str:
         """Look up the human-readable task name. Best-effort: the
@@ -254,6 +256,9 @@ class HarnessRunner:
 
         messages = await self.opencode.messages(session_id, limit=50)
         is_busy = self.prompts.messages_indicate_busy(messages)
+        recent_activity = self.prompts.recent_assistant_activity(
+            messages, n=self.notify_recent_messages,
+        )
         # Stable identifier of the latest assistant message at this
         # point in the session's history. Used to invalidate the
         # nudge dedup when the agent has produced new content since
@@ -418,6 +423,7 @@ class HarnessRunner:
                 "current_step": current_step,
                 "progress": step_progress,
                 "summary": summary,
+                "recent_activity": recent_activity,
             },
         ))
 
@@ -425,13 +431,20 @@ class HarnessRunner:
             self.bus.emit(Event(
                 type=EventType.TASK_COMPLETED, task_id=task_id, store_version=sv,
                 task_name=str(task.get("name") or ""),
-                data={"summary": summary, "progress": step_progress},
+                data={
+                    "summary": summary,
+                    "progress": step_progress,
+                    "recent_activity": recent_activity,
+                },
             ))
         elif status == "failed":
             self.bus.emit(Event(
                 type=EventType.TASK_FAILED, task_id=task_id, store_version=sv,
                 task_name=str(task.get("name") or ""),
-                data={"summary": summary},
+                data={
+                    "summary": summary,
+                    "recent_activity": recent_activity,
+                },
             ))
 
     async def _start_task(self, task: dict[str, Any]) -> None:

@@ -568,6 +568,118 @@ def assistant_transcript(messages: list[dict[str, Any]], limit: int | None = Non
     return "\n\n".join(_message_text(m) for m in assistants[-limit:] if _message_text(m))
 
 
+# Notification payload tuning knobs. Kept as module constants so
+# tests can reference them by name and a future CLI flag can
+# override them via Settings.
+RECENT_ACTIVITY_DEFAULT_N = 3
+ACTIVITY_TEXT_MAX_CHARS = 1_000
+TOOL_INPUT_EXCERPT_CHARS = 80
+
+
+def _truncate(text: str, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)] + "…"
+
+
+def _summarise_tools(message: dict[str, Any]) -> list[dict[str, Any]]:
+    """Render the tool-call summary for one assistant message:
+    one entry per tool part, with the tool name, status, and the
+    first 80 chars of the input. Output is intentionally omitted
+    because tool output is unbounded and rarely the question a
+    remote operator is asking ("what is the agent up to?" vs.
+    "what did the tool return?")."""
+    out: list[dict[str, Any]] = []
+    for part in (message.get("parts") or []):
+        if not isinstance(part, dict):
+            continue
+        if part.get("type") != "tool":
+            continue
+        state = part.get("state")
+        # A tool part without a usable state dict cannot be
+        # summarised meaningfully — skip rather than emit a
+        # placeholder that would mislead a remote operator.
+        if not isinstance(state, dict):
+            continue
+        # Tool name lives in state.tool (OpenCode 1.16) or in the
+        # part itself; tolerate both.
+        tool_name = (
+            str(state.get("tool") or part.get("tool") or "").strip()
+            or "unknown"
+        )
+        status = str(state.get("status") or "").strip().lower() or "unknown"
+        # Input: try the canonical keys; fall back to the part's
+        # own input field. The shape varies across OpenCode
+        # versions, so we just string-coerce anything we find.
+        raw_input = (
+            state.get("input")
+            or part.get("input")
+            or state.get("args")
+            or part.get("args")
+        )
+        if isinstance(raw_input, dict):
+            try:
+                import json
+
+                text_input = json.dumps(raw_input, ensure_ascii=False)
+            except (TypeError, ValueError):
+                text_input = str(raw_input)
+        else:
+            text_input = str(raw_input or "")
+        out.append({
+            "tool": tool_name,
+            "status": status,
+            "input_excerpt": _truncate(text_input, TOOL_INPUT_EXCERPT_CHARS),
+        })
+    return out
+
+
+def recent_assistant_activity(
+    messages: list[dict[str, Any]],
+    *,
+    n: int = RECENT_ACTIVITY_DEFAULT_N,
+) -> list[dict[str, Any]]:
+    """Return the last ``n`` assistant messages from ``messages``,
+    each rendered as a compact dict suitable for embedding in a
+    notify payload:
+
+        {
+          "text": "<truncated to 1000 chars>",
+          "completed_at": <float epoch, 0 if unknown>,
+          "tools": [{"tool": "bash", "status": "completed",
+                     "input_excerpt": "..."}, ...]
+        }
+
+    The function is best-effort — fields it cannot determine
+    (e.g. a missing ``time.completed``) are returned as empty
+    strings or empty lists so the JSON shape is stable and
+    webhook handlers do not have to special-case missing keys.
+    """
+    n = max(1, int(n))
+    assistants = [m for m in messages if message_role(m) == "assistant"]
+    selected = assistants[-n:]
+    out: list[dict[str, Any]] = []
+    for message in selected:
+        info = (
+            message.get("info") if isinstance(message.get("info"), dict)
+            else message
+        )
+        completed_at = 0.0
+        if isinstance(info, dict):
+            t = info.get("time") or {}
+            if isinstance(t, dict):
+                completed = t.get("completed")
+                if isinstance(completed, (int, float)):
+                    completed_at = float(completed)
+        text = _truncate(_message_text(message).strip(), ACTIVITY_TEXT_MAX_CHARS)
+        out.append({
+            "text": text,
+            "completed_at": completed_at,
+            "tools": _summarise_tools(message),
+        })
+    return out
+
+
 def detect_progress_from_messages(messages: list[dict[str, Any]], spec: TaskSpec) -> dict[str, Any]:
     return detect_progress(assistant_transcript(messages), spec)
 

@@ -46,6 +46,13 @@ class SessionMonitor:
         self._stale_count: dict[str, int] = {}
         self._stale_fired: set[str] = set()
         self._event_sink: Callable[[Event], None] | None = None
+        # Cache of the most recently fetched message list per
+        # session. We populate this from the busy-probe path so
+        # the SESSION_STALE_BUSY emit can attach a recent-activity
+        # excerpt without a second HTTP round-trip.
+        self._last_messages: dict[str, list[dict[str, Any]]] = {}
+        self._prompts_module: Any | None = None
+        self._recent_activity_n: int = 3
 
     def on_event(self, handler: Callable[[Event], None]) -> None:
         """Register a handler for monitor-emitted events (e.g. SESSION_STALE_BUSY).
@@ -55,6 +62,16 @@ class SessionMonitor:
         further plumbing.
         """
         self._event_sink = handler
+
+    def attach_prompts(self, prompts: Any, *, recent_n: int = 3) -> None:
+        """Wire the monitor to the same ``PromptsPort`` the harness
+        uses so the SESSION_STALE_BUSY event can include a
+        recent-activity excerpt (last assistant messages + tool
+        summary). The monitor does not need this for its core
+        job — it is a payload-enrichment concern only.
+        """
+        self._prompts_module = prompts
+        self._recent_activity_n = max(1, int(recent_n))
 
     @property
     def status(self) -> dict[str, str]:
@@ -238,18 +255,34 @@ class SessionMonitor:
         elapsed = max(0.0, now - baseline) if baseline else 0.0
         title = str(session.get("title") or "").strip()
         directory = str(session.get("directory") or "").strip()
+        data: dict[str, Any] = {
+            "session_id": sid,
+            "title": title or None,
+            "directory": directory or None,
+            "consecutive_busy_checks": checks,
+            "threshold_checks": self._stale_busy_threshold,
+            "stuck_for_seconds": int(elapsed),
+        }
+        # Best-effort recent-activity excerpt. The monitor does
+        # not depend on the prompts module for its core work, so
+        # we silently skip the field when it has not been wired
+        # (e.g. older tests or alternative harnesses).
+        if self._prompts_module is not None:
+            try:
+                data["recent_activity"] = (
+                    self._prompts_module.recent_assistant_activity(
+                        self._last_messages.get(sid) or [],
+                        n=self._recent_activity_n,
+                    )
+                )
+            except Exception:
+                # Payload enrichment must never break the alert.
+                pass
         event = Event(
             type=EventType.SESSION_STALE_BUSY,
             task_id="",
             timestamp=now,
-            data={
-                "session_id": sid,
-                "title": title or None,
-                "directory": directory or None,
-                "consecutive_busy_checks": checks,
-                "threshold_checks": self._stale_busy_threshold,
-                "stuck_for_seconds": int(elapsed),
-            },
+            data=data,
         )
         try:
             self._event_sink(event)
@@ -270,12 +303,12 @@ class SessionMonitor:
         {sid, ...})`` so the stale-busy tracker can detect real
         progress even when /session/status itself is silent.
         """
-        async def probe(session: dict[str, Any]) -> tuple[str, bool, float]:
+        async def probe(session: dict[str, Any]) -> tuple[str, bool, float, list[dict[str, Any]]]:
             sid = session["id"]
             try:
-                msgs = await self.client.messages(sid, limit=4)
+                msgs = await self.client.messages(sid, limit=20)
             except Exception:
-                return sid, False, 0.0
+                return sid, False, 0.0, []
             busy = messages_indicate_busy(msgs)
             latest = 0.0
             for msg in msgs:
@@ -286,13 +319,18 @@ class SessionMonitor:
                 completed = t.get("completed")
                 if isinstance(completed, (int, float)) and completed > latest:
                     latest = float(completed)
-            return sid, busy, latest
+            return sid, busy, latest, msgs
 
         results = await asyncio.gather(*(probe(s) for s in sessions))
         progress: dict[str, float] = {}
         probed_busy: set[str] = set()
-        for sid, busy, latest in results:
+        for sid, busy, latest, msgs in results:
             progress[sid] = latest
+            if msgs:
+                # Replace (do not append) so the cache reflects
+                # "the messages we just observed", not a stale
+                # snapshot from a previous refresh.
+                self._last_messages[sid] = msgs
             if busy:
                 probed_busy.add(sid)
                 self._status[sid] = BUSY

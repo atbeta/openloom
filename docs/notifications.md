@@ -42,10 +42,32 @@ All sinks receive the same JSON shape:
   "data": {
     "summary": "Agent reported TASK COMPLETE",
     "step_done": 3,
-    "step_count": 3
+    "step_count": 3,
+    "recent_activity": [
+      {
+        "text": "All three steps are now green.",
+        "completed_at": 1749999990.0,
+        "tools": [
+          {"tool": "bash", "status": "completed",
+           "input_excerpt": "pytest -x"}
+        ]
+      }
+    ]
   }
 }
 ```
+
+`data.recent_activity` is a list of the last few assistant messages from the session's transcript (default 3; override with `OPENLOOM_NOTIFY_RECENT_MESSAGES`). Each entry has:
+
+| Field | Meaning |
+|-------|---------|
+| `text` | The agent's reply text, truncated to 1 000 characters. |
+| `completed_at` | The Unix-epoch timestamp the message finished, or `0.0` if unknown. |
+| `tools` | A list of `{"tool", "status", "input_excerpt"}` for the tool calls in that message. `input_excerpt` is the JSON-serialised tool input truncated to 80 characters. Tool **output is omitted on purpose** — it is unbounded and rarely what a remote operator needs. |
+
+The list is the right size to fit in a Slack or Discord webhook payload even when the agent is mid-investigation: ~3 KB per event. Tool input is JSON-serialised so file paths and command snippets survive intact, and the truncation is marked with `…` so the receiver can tell the input was clipped.
+
+The field is best-effort: harness events emitted from the periodic check path include it; rare paths that do not have access to the message log (the manual `pause_task` / `complete_task` API calls, the catch-all `tick()` exception handler, and `TASK_CREATED` / `TASK_STARTED` / `LOG_LINE`) omit it. The shape is always a JSON list, possibly empty.
 
 For session-level events, `task_id` is `""` and the subject lives in `data`:
 
@@ -61,10 +83,22 @@ For session-level events, `task_id` is `""` and the subject lives in `data`:
     "directory": "/Users/you/project",
     "consecutive_busy_checks": 10,
     "threshold_checks": 10,
-    "stuck_for_seconds": 84
+    "stuck_for_seconds": 84,
+    "recent_activity": [
+      {
+        "text": "Running npm install — that is the long step.",
+        "completed_at": 1749999900.0,
+        "tools": [
+          {"tool": "bash", "status": "running",
+           "input_excerpt": "npm install --no-audit --no-fund"}
+        ]
+      }
+    ]
   }
 }
 ```
+
+`SESSION_STALE_BUSY` also carries a `recent_activity` excerpt so the receiving end can tell at a glance what the agent was last working on when it got stuck — typically a long-running `bash` invocation whose `status` is `running`.
 
 ## `SESSION_STALE_BUSY`
 

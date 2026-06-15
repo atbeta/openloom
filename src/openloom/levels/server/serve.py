@@ -51,6 +51,7 @@ async def run_serve(
         client, stale_busy_threshold=settings.stale_busy_checks,
     )
     monitor.on_event(bus.emit)
+    monitor.attach_prompts(prompts, recent_n=settings.notify_recent_messages)
 
     await monitor.refresh()
 

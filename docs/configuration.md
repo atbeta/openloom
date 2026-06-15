@@ -55,6 +55,7 @@ Webhook and file sinks receive every harness event by default; you can filter by
 | `OPENLOOM_NOTIFY_WEBHOOK_EVENTS` | *(all)* | Optional comma- or space-separated list of event names to forward. Default forwards every event. |
 | `OPENLOOM_NOTIFY_FILE_DIRS` | *(unset)* | Comma- or space-separated list of directory paths. Each becomes a `FileSink`. |
 | `OPENLOOM_NOTIFY_FILE_PREFIX` | `openloom` | Filename prefix for file-sink outputs. |
+| `OPENLOOM_NOTIFY_RECENT_MESSAGES` | `3` | How many of the latest assistant messages to include in `data.recent_activity` on task and session events. Each entry is truncated (1 000 chars of text, 80 chars of tool input) so the webhook stays well under 40 KB even for verbose agents. |
 
 Example: forward only task lifecycle and stale-busy events to Slack, full stream to disk:
 

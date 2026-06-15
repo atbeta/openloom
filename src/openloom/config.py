@@ -24,6 +24,7 @@ class Settings:
     inbox_filename: str = "task.md"
     inbox_poll_interval_seconds: float = 30.0
     stale_busy_checks: int = 10
+    notify_recent_messages: int = 3
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -62,6 +63,9 @@ class Settings:
             inbox_filename=os.getenv("OPENLOOM_INBOX_FILENAME", "task.md").strip() or "task.md",
             inbox_poll_interval_seconds=poll_interval,
             stale_busy_checks=_optional_env_int("OPENLOOM_STALE_BUSY_CHECKS") or 10,
+            notify_recent_messages=(
+                _optional_env_int("OPENLOOM_NOTIFY_RECENT_MESSAGES") or 3
+            ),
         )
 
 
