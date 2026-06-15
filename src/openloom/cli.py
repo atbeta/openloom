@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
+import dataclasses
 import importlib.util
 import logging
 import os
@@ -95,6 +96,27 @@ def _configure_logging(verbose: bool) -> None:
         datefmt="%H:%M:%S",
         force=True,
     )
+
+
+def _apply_serve_overrides(
+    settings: Settings, *, host: str | None, port: int | None,
+) -> Settings:
+    """Apply ``--host`` / ``--port`` overrides to a Settings instance.
+
+    Only the UI bind address should be touched; every other field
+    (notify sinks, inbox, task limits, etc.) must come from the
+    env-derived settings. Constructing a fresh ``Settings(...)`` here
+    would silently drop those env-loaded values, so we use
+    ``dataclasses.replace`` to patch only what changed.
+    """
+    overrides: dict[str, Any] = {}
+    if host:
+        overrides["ui_host"] = host
+    if port is not None:
+        overrides["ui_port"] = port
+    if not overrides:
+        return settings
+    return dataclasses.replace(settings, **overrides)
 
 
 def _build_notify_sinks(settings: Settings) -> list[Any]:
@@ -268,23 +290,7 @@ def main() -> None:
         import openloom.levels.ui.sink  # noqa: F401
         from openloom.levels.server.serve import run_serve
 
-        if args.host:
-            settings = Settings(
-                opencode_url=settings.opencode_url,
-                opencode_username=settings.opencode_username,
-                opencode_password=settings.opencode_password,
-                database_path=settings.database_path,
-                ui_host=args.host,
-                ui_port=args.port or settings.ui_port,
-            )
-        elif args.port:
-            settings = Settings(
-                opencode_url=settings.opencode_url,
-                opencode_username=settings.opencode_username,
-                opencode_password=settings.opencode_password,
-                database_path=settings.database_path,
-                ui_port=args.port,
-            )
+        settings = _apply_serve_overrides(settings, host=args.host, port=args.port)
 
         asyncio.run(
             run_serve(
