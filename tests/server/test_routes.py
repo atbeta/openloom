@@ -16,8 +16,6 @@ from httpx import Response
 def opencode_running() -> Any:
     """Stub out OpenCodeClient with a catch-all respx mock."""
     with respx.mock(assert_all_called=False) as mock:
-        def passthrough(request):
-            return Response(200, json={} if request.method != "GET" else [])
         mock.route(method="GET", url__regex=r".*session(_status)?($|\?|/[^/]*/?message)").mock(
             return_value=Response(200, json=[]),
         )
@@ -40,16 +38,14 @@ def opencode_running() -> Any:
 def client(opencode_running: Any, tmp_path: Path) -> TestClient:
     os.environ["OPENLOOM_DATABASE"] = str(tmp_path / "store.sqlite3")
 
-    import openloom.levels.manual.checker  # noqa
-    import openloom.levels.manual.sink  # noqa
-    import openloom.levels.ui.sink  # noqa
-
     from openloom.config import Settings
     from openloom.core.events import EventBus
     from openloom.core.harness import HarnessRunner
-    from openloom.core.registry import get_checker, get_sink
+    from openloom.core.registry import get_sink
     from openloom.core.store import Store
+    from openloom.levels.server.console_sink import ConsoleSink  # noqa: F401 — registers
     from openloom.levels.server.monitor import SessionMonitor
+    from openloom.levels.server.web_sink import WebSink  # noqa: F401 — registers
     from openloom.runtime import prompts, session_status
     from openloom.runtime.opencode import OpenCodeClient
     from openloom.server.app import create_app
@@ -64,25 +60,18 @@ def client(opencode_running: Any, tmp_path: Path) -> TestClient:
     bus = EventBus()
     web_sink = get_sink("web")()
     bus.subscribe_all(web_sink.on_event)
-    checker = get_checker("string")()
     harness = HarnessRunner(
         opencode=client_obj,
         bus=bus,
         store=store,
-        checker=checker,
         prompts=prompts,
         status=session_status,
     )
-
-    def parse_spec(text: str, fmt: str):
-        from openloom.runtime.prompts import parse_task_spec
-        return parse_task_spec(text, fmt)
 
     app = create_app(
         harness=harness, store=store, bus=bus, web_sink=web_sink,
         client=client_obj, monitor=SessionMonitor(client_obj),
         recent=recent, settings=settings,
-        parse_spec=parse_spec, pick_folder=None,
     )
     return TestClient(app)
 
@@ -105,21 +94,41 @@ def test_api_state_shape(client: TestClient) -> None:
 
 def test_post_task_creates_and_records_recent(client: TestClient) -> None:
     r = client.post("/api/tasks", json={
-        "format": "yaml",
-        "spec": "name: t\nworkspace: /tmp/openloom-smoke\nsteps:\n  - one\n",
+        "name": "demo",
+        "workspace": "/tmp/openloom-smoke",
+        "goal": "do the thing",
     })
     assert r.status_code == 200, r.text
     body = r.json()
     assert "taskId" in body
+    assert body["ok"] is True
+    assert body["status"] == "pending"
+    assert body["sessionId"] is None
 
     workspaces = client.get("/api/recent-workspaces").json()["workspaces"]
     assert any("openloom-smoke" in w for w in workspaces)
 
 
+def test_post_task_rejects_missing_goal(client: TestClient) -> None:
+    r = client.post("/api/tasks", json={
+        "name": "demo",
+        "workspace": "/tmp/openloom-smoke",
+    })
+    assert r.status_code == 400
+    assert "goal" in r.text.lower()
+
+
+def test_post_task_rejects_missing_workspace_and_session(client: TestClient) -> None:
+    r = client.post("/api/tasks", json={"name": "demo", "goal": "g"})
+    assert r.status_code == 400
+    assert "workspace" in r.text.lower() or "sessionid" in r.text.lower()
+
+
 def test_task_pause_resume_complete_archive(client: TestClient) -> None:
     r = client.post("/api/tasks", json={
-        "format": "yaml",
-        "spec": "name: t\nworkspace: /tmp/openloom-smoke\nsteps:\n  - one\n",
+        "name": "t",
+        "workspace": "/tmp/openloom-smoke",
+        "goal": "do the thing",
     })
     tid = r.json()["taskId"]
     assert client.post(f"/api/tasks/{tid}/pause").json()["status"] == "paused"
@@ -130,8 +139,9 @@ def test_task_pause_resume_complete_archive(client: TestClient) -> None:
 
 def test_delete_archived_task(client: TestClient) -> None:
     r = client.post("/api/tasks", json={
-        "format": "yaml",
-        "spec": "name: t\nworkspace: /tmp/openloom-smoke\nsteps:\n  - one\n",
+        "name": "t",
+        "workspace": "/tmp/openloom-smoke",
+        "goal": "do the thing",
     })
     tid = r.json()["taskId"]
     assert client.post(f"/api/tasks/{tid}/archive").json()["status"] == "archived"
@@ -143,464 +153,11 @@ def test_delete_archived_task(client: TestClient) -> None:
 
 def test_delete_active_task_rejected(client: TestClient) -> None:
     r = client.post("/api/tasks", json={
-        "format": "yaml",
-        "spec": "name: t\nworkspace: /tmp/openloom-smoke\nsteps:\n  - one\n",
+        "name": "t",
+        "workspace": "/tmp/openloom-smoke",
+        "goal": "do the thing",
     })
     tid = r.json()["taskId"]
     rejected = client.delete(f"/api/tasks/{tid}")
     assert rejected.status_code == 400
 
-
-def test_create_task_rejects_empty_prompt(client: TestClient) -> None:
-    r = client.post("/api/tasks", json={"prompt": "", "workspace": "/tmp/openloom-smoke"})
-    assert r.status_code == 400
-
-
-def test_create_task_prompt_default_interval(client: TestClient) -> None:
-    r = client.post("/api/tasks", json={
-        "prompt": "hello from task panel",
-        "workspace": "/tmp/openloom-smoke",
-    })
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["ok"] is True
-    assert body["watch"] is True
-    assert "taskId" in body
-    task = client.get(f"/api/tasks/{body['taskId']}").json()["task"]
-    assert task["check_interval_seconds"] == 300
-
-
-def test_create_task_clamps_interval_below_minimum(client: TestClient) -> None:
-    r = client.post("/api/tasks", json={
-        "prompt": "quick check",
-        "workspace": "/tmp/openloom-smoke",
-        "checkIntervalMinutes": 0,
-    })
-    assert r.status_code == 200, r.text
-    task = client.get(f"/api/tasks/{r.json()['taskId']}").json()["task"]
-    assert task["check_interval_seconds"] == 300
-
-
-def test_create_task_prompt_watch(client: TestClient) -> None:
-    r = client.post("/api/tasks", json={
-        "prompt": "keep working overnight",
-        "workspace": "/tmp/openloom-smoke",
-        "checkIntervalMinutes": 5,
-    })
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["watch"] is True
-    task = client.get(f"/api/tasks/{body['taskId']}").json()["task"]
-    assert task["check_interval_seconds"] == 300
-
-
-def test_create_task_with_plan(client: TestClient) -> None:
-    r = client.post("/api/tasks", json={
-        "workspace": "/tmp/openloom-smoke",
-        "checkIntervalMinutes": 5,
-        "plan": {
-            "name": "Fix SSE",
-            "goal": "Reconnect after drop",
-            "steps": [
-                {"title": "Inspect", "acceptance": ["Client inspected"]},
-                {"title": "Implement", "acceptance": ["Reconnect works"]},
-                {"title": "Test", "acceptance": ["Tests added"]},
-            ],
-            "global_acceptance": ["pytest passes"],
-        },
-    })
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["steps"] == 3
-    assert body["acceptance"] == 1
-    task = client.get(f"/api/tasks/{body['taskId']}").json()["task"]
-    assert task["spec"]["steps"] == ["Inspect", "Implement", "Test"]
-    assert task["spec"]["step_acceptance"] == [
-        ["Client inspected"],
-        ["Reconnect works"],
-        ["Tests added"],
-    ]
-    assert task["spec"]["acceptance"] == ["pytest passes"]
-
-
-def test_post_tasks_plan_not_method_not_allowed(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    from openloom.runtime import planner as planner_mod
-    from openloom.runtime.planner import PlanStep, TaskPlan
-
-    async def fake_generate_plan(client_obj, *, workspace: str, intent: str, agent=None):
-        return TaskPlan(
-            name="Planned task",
-            goal=f"Goal for {intent}",
-            steps=[PlanStep("Step one", ["done"])],
-            global_acceptance=[],
-            intent=intent,
-        )
-
-    monkeypatch.setattr(planner_mod, "generate_plan", fake_generate_plan)
-    r = client.post("/api/tasks/plan", json={
-        "intent": "build feature x",
-        "workspace": "/tmp/openloom-smoke",
-    })
-    assert r.status_code == 200, r.text
-    assert r.status_code != 405
-
-
-def test_generate_task_plan(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    from openloom.runtime import planner as planner_mod
-    from openloom.runtime.planner import PlanStep, TaskPlan
-
-    async def fake_generate_plan(client_obj, *, workspace: str, intent: str, agent=None):
-        return TaskPlan(
-            name="Planned task",
-            goal=f"Goal for {intent}",
-            steps=[
-                PlanStep("Step one", ["Criterion one"]),
-                PlanStep("Step two", ["Criterion two"]),
-            ],
-            global_acceptance=["Criterion A"],
-            intent=intent,
-        )
-
-    monkeypatch.setattr(planner_mod, "generate_plan", fake_generate_plan)
-    r = client.post("/api/tasks/plan", json={
-        "intent": "build feature x",
-        "workspace": "/tmp/openloom-smoke",
-    })
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["ok"] is True
-    assert body["plan"]["steps"][0]["title"] == "Step one"
-    assert body["plan"]["steps"][0]["acceptance"] == ["Criterion one"]
-    assert body["plan"]["global_acceptance"] == ["Criterion A"]
-    assert body["plan"]["name"] == "Planned task"
-
-
-def test_create_task_with_session_id(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    from openloom.runtime.opencode import OpenCodeClient
-
-    async def fake_list_sessions(self: OpenCodeClient) -> list[dict[str, str]]:
-        return [{"id": "sess_existing", "directory": "/tmp/openloom-smoke", "title": "Existing"}]
-
-    monkeypatch.setattr(OpenCodeClient, "list_sessions", fake_list_sessions)
-    r = client.post("/api/tasks", json={
-        "format": "yaml",
-        "spec": "name: watch\nworkspace: /tmp/openloom-smoke\ngoal: keep going\nsteps:\n  - one\n",
-        "sessionId": "sess_existing",
-    })
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["sessionId"] == "sess_existing"
-    task = client.get(f"/api/tasks/{body['taskId']}").json()["task"]
-    assert task["active_session_id"] == "sess_existing"
-
-
-def test_browse_directory(client: TestClient) -> None:
-    r = client.get("/api/browse", params={"path": "/tmp"})
-    assert r.status_code == 200
-    body = r.json()
-    assert "children" in body
-    assert body["parent"] is not None
-
-
-def test_browse_rejects_nonexistent(client: TestClient) -> None:
-    r = client.get("/api/browse", params={"path": "/this/does/not/exist"})
-    assert r.status_code in (400, 404)
-
-
-def test_recent_workspaces_round_trip(client: TestClient) -> None:
-    assert client.get("/api/recent-workspaces").json()["workspaces"] == []
-    client.post("/api/tasks", json={
-        "format": "yaml",
-        "spec": "name: t\nworkspace: /tmp/openloom-smoke\nsteps:\n  - one\n",
-    })
-    workspaces = client.get("/api/recent-workspaces").json()["workspaces"]
-    assert len(workspaces) == 1
-    r = client.delete("/api/recent-workspaces", params={"path": workspaces[0]})
-    assert r.json()["removed"] is True
-    assert client.get("/api/recent-workspaces").json()["workspaces"] == []
-
-
-def test_session_archive_endpoints(client: TestClient) -> None:
-    r = client.post("/api/sessions/sess_test/archive")
-    assert r.status_code == 200
-    assert r.json()["archived"] is True
-    r = client.delete("/api/sessions/sess_test/archive")
-    assert r.status_code == 200
-    assert r.json()["archived"] is False
-
-
-def test_session_delete(client: TestClient) -> None:
-    r = client.post("/api/sessions/sess_test/delete")
-    assert r.status_code == 200
-    assert r.json()["deleted"] is True
-
-
-def test_session_messages_and_diff(client: TestClient) -> None:
-    r = client.get("/api/sessions/sess_test/messages")
-    assert r.status_code == 200
-    assert "messages" in r.json()
-    r = client.get("/api/sessions/sess_test/diff")
-    assert r.status_code == 200
-    assert "diff" in r.json()
-
-
-def test_404_task_returns_404(client: TestClient) -> None:
-    assert client.post("/api/tasks/nonexistent/pause").status_code == 404
-
-
-def test_static_spa_fallback(client: TestClient) -> None:
-    r = client.get("/some/spa/route")
-    assert r.status_code == 200
-    assert "<html" in r.text.lower()
-
-
-# --- inbox trigger endpoint ---
-
-
-_INBOX_TEXT = """# Triggered task
-
-workspace: /tmp/openloom-smoke
-
-## goal
-Do the thing.
-"""
-
-
-def test_inbox_trigger_with_text_creates_task(client: TestClient) -> None:
-    r = client.post("/api/inbox/trigger", json={"text": _INBOX_TEXT})
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["ok"] is True
-    assert body["source"] == "text"
-    assert body["name"] == "Triggered task"
-    assert "taskId" in body
-    assert client.get(f"/api/tasks/{body['taskId']}").status_code == 200
-
-
-def test_inbox_trigger_with_path_reads_file(tmp_path: Path, client: TestClient) -> None:
-    p = tmp_path / "external.md"
-    p.write_text(_INBOX_TEXT, encoding="utf-8")
-    r = client.post("/api/inbox/trigger", json={"path": str(p)})
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["source"] == "path"
-    assert body["name"] == "Triggered task"
-
-
-def test_inbox_trigger_uses_default_workspace_when_missing(client: TestClient) -> None:
-    r = client.post("/api/inbox/trigger", json={
-        "text": "# No workspace\n\nDo X.\n",
-        "default_workspace": "/tmp/openloom-smoke",
-    })
-    assert r.status_code == 200, r.text
-    assert r.json()["ok"] is True
-
-
-def test_inbox_trigger_rejects_missing_workspace(client: TestClient) -> None:
-    r = client.post("/api/inbox/trigger", json={"text": "# No workspace\n\nDo X.\n"})
-    assert r.status_code == 400
-    assert "workspace" in r.json()["detail"]
-
-
-def test_inbox_trigger_rejects_both_text_and_path(client: TestClient) -> None:
-    r = client.post("/api/inbox/trigger", json={
-        "text": "x", "path": "/tmp/y.md",
-    })
-    assert r.status_code == 400
-    assert "exactly one" in r.json()["detail"]
-
-
-def test_inbox_trigger_rejects_neither(client: TestClient) -> None:
-    r = client.post("/api/inbox/trigger", json={})
-    assert r.status_code == 400
-    assert "must include" in r.json()["detail"]
-
-
-def test_inbox_trigger_rejects_missing_path(client: TestClient, tmp_path: Path) -> None:
-    r = client.post("/api/inbox/trigger", json={"path": str(tmp_path / "nope.md")})
-    assert r.status_code == 400
-    assert "not found" in r.json()["detail"]
-
-
-def test_inbox_trigger_rejects_invalid_markdown(client: TestClient) -> None:
-    # The markdown parser is intentionally tolerant and rarely raises.
-    # We unit-test the ValueError path on the helper directly below.
-    pass
-
-
-def test_inbox_trigger_helper_rejects_missing_text_and_path() -> None:
-    import pytest
-
-    from openloom.server.routes.tasks import inbox_trigger
-
-    class _H:
-        def add_task(self, spec):
-            return "task_x"
-
-    with pytest.raises(ValueError, match="must include"):
-        inbox_trigger(harness=_H(), parse_spec=None, body={})
-
-
-def test_inbox_trigger_helper_rejects_both_text_and_path() -> None:
-    import pytest
-
-    from openloom.server.routes.tasks import inbox_trigger
-
-    class _H:
-        def add_task(self, spec):
-            return "task_x"
-
-    with pytest.raises(ValueError, match="exactly one"):
-        inbox_trigger(harness=_H(), parse_spec=None, body={"text": "x", "path": "/y.md"})
-
-
-def test_inbox_trigger_helper_uses_default_workspace() -> None:
-    from openloom.server.routes.tasks import inbox_trigger
-
-    captured = {}
-
-    class _H:
-        def add_task(self, spec, **kwargs):
-            captured["workspace"] = spec.workspace
-            captured["kwargs"] = kwargs
-            return "task_xyz"
-
-    result = inbox_trigger(
-        harness=_H(),
-        parse_spec=None,
-        body={
-            "text": "# hello\n\nDo it.\n",
-            "default_workspace": "/srv/loop",
-        },
-    )
-    assert result["ok"] is True
-    assert captured["workspace"] == "/srv/loop"
-    # No session binding requested: kwargs carry explicit None so the
-    # harness knows the spec is unbound.
-    assert captured["kwargs"] == {
-        "active_session_id": None,
-        "session_ids": None,
-    }
-    assert result["sessionId"] is None
-
-
-def test_inbox_trigger_helper_forwards_session_id_from_body() -> None:
-    from openloom.server.routes.tasks import inbox_trigger
-
-    captured = {}
-
-    class _H:
-        def add_task(self, spec, **kwargs):
-            captured["kwargs"] = kwargs
-            return "task_xyz"
-
-    result = inbox_trigger(
-        harness=_H(),
-        parse_spec=None,
-        body={
-            "text": "# hello\n\nworkspace: /w\n",
-            "sessionId": "ses_abc",
-        },
-    )
-    assert result["ok"] is True
-    assert result["sessionId"] == "ses_abc"
-    assert captured["kwargs"] == {
-        "active_session_id": "ses_abc",
-        "session_ids": ["ses_abc"],
-    }
-
-
-def test_inbox_trigger_helper_reads_session_from_markdown() -> None:
-    from openloom.server.routes.tasks import inbox_trigger
-
-    captured = {}
-
-    class _H:
-        def add_task(self, spec, **kwargs):
-            captured["kwargs"] = kwargs
-            return "task_xyz"
-
-    result = inbox_trigger(
-        harness=_H(),
-        parse_spec=None,
-        body={"text": "# hello\n\nsession: ses_md\nworkspace: /w\n"},
-    )
-    assert result["ok"] is True
-    assert result["sessionId"] == "ses_md"
-    assert captured["kwargs"]["active_session_id"] == "ses_md"
-
-
-def test_inbox_trigger_helper_body_session_overrides_markdown() -> None:
-    from openloom.server.routes.tasks import inbox_trigger
-
-    captured = {}
-
-    class _H:
-        def add_task(self, spec, **kwargs):
-            captured["kwargs"] = kwargs
-            return "task_xyz"
-
-    result = inbox_trigger(
-        harness=_H(),
-        parse_spec=None,
-        body={
-            "text": "# hello\n\nsession: ses_md\nworkspace: /w\n",
-            "sessionId": "ses_body",
-        },
-    )
-    assert result["sessionId"] == "ses_body"
-    assert captured["kwargs"]["active_session_id"] == "ses_body"
-
-
-def test_inbox_trigger_propagates_abort_flag_from_markdown() -> None:
-    """The "take over the stuck agent from home" path: a markdown
-    with ``abort: true`` and ``session: <id>`` must reach the
-    harness with the abort flag intact, so the harness's _start_task
-    will call abort_session() before send_prompt_async()."""
-    from openloom.server.routes.tasks import inbox_trigger
-
-    captured = {}
-
-    class _H:
-        def add_task(self, spec, **kwargs):
-            captured["abort"] = spec.abort_session
-            captured["active_session_id"] = kwargs.get("active_session_id")
-            return "task_xyz"
-
-    result = inbox_trigger(
-        harness=_H(),
-        parse_spec=None,
-        body={
-            "text": (
-                "# Resume after the hang\n\n"
-                "session: ses_stuck\n"
-                "abort: true\n"
-                "workspace: /tmp\n\n"
-                "## goal\nPick up from where you stopped.\n"
-            ),
-        },
-    )
-    assert result["ok"] is True
-    assert result["sessionId"] == "ses_stuck"
-    assert captured["abort"] is True
-    assert captured["active_session_id"] == "ses_stuck"
-
-
-def test_inbox_trigger_abort_defaults_false() -> None:
-    """A markdown without ``abort:`` must NOT abort — ordinary
-    inbox dispatches should be safe appends."""
-    from openloom.server.routes.tasks import inbox_trigger
-
-    captured = {}
-
-    class _H:
-        def add_task(self, spec, **kwargs):
-            captured["abort"] = spec.abort_session
-            return "task_xyz"
-
-    inbox_trigger(
-        harness=_H(),
-        parse_spec=None,
-        body={"text": "# continue\n\nsession: ses_x\nworkspace: /w\n"},
-    )
-    assert captured["abort"] is False

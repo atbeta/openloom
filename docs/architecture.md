@@ -1,28 +1,34 @@
 # Architecture
 
-OpenLoom is a thin harness and observer on top of OpenCode. The codebase is split into four layers with strict import rules; new capabilities are added as `levels/` packages, never by widening `core/`.
+OpenLoom is a thin webhook-driven layer on top of OpenCode. The codebase is split into four layers with strict import rules; new capabilities are added as `levels/` packages, never by widening `core/`.
 
 ## Layout
 
 ```
 src/openloom/
-├── core/        # events / harness / store / 3 ABC + protocols (keep lean)
-├── runtime/     # OpenCode HTTP client, session status, prompts
-├── levels/      # Progressive capabilities (manual, config, ui, inbox, notify, …)
-└── server/      # create_app(harness=) factory + routes + static (needs [ui])
-docs/            # Detailed user guides (configuration, inbox, notifications, …)
-tests/           # contracts/ holds the architecture-enforcement tests
+├── __init__.py
+├── cli.py                       only `openloom serve`; subcommand map is fixed
+├── config.py                    Settings dataclass + env loader
+├── core/                        events / harness / store / protocols / sink
+├── runtime/                     OpenCode HTTP client, prompts, telemetry
+├── levels/
+│   ├── notify/                  WebhookSink + NotifyConfig (no file sink in 0.12)
+│   └── server/                  SessionMonitor, WebSink, ConsoleSink, serve
+└── server/                      FastAPI app + routes + static UI ([ui] extra)
+docs/                            Detailed user guides
+tests/
+└── contracts/                   Architecture-enforcement tests
 ```
 
-The four layers enforce the following invariants (enforced by `tests/contracts/test_architecture.py`):
+The four layers enforce the following invariants (enforced by `tests/contracts/test_architecture.py` and a small set of conventions):
 
 1. `core/` does not import any sibling package.
-2. `levels/` modules do not import each other. Shared code lives in `runtime/` or `server/`.
-3. No `try: import` of optional deps in `__init__.py`. Optional capabilities are cold-detected (the import happens at first use, the result is not cached).
+2. `levels/` modules do not import each other. Shared code lives in `runtime/`.
+3. No `try: import` of optional deps in `__init__.py`. Optional capabilities are cold-detected.
 4. The harness does not call sink methods directly. State changes go through the store; the store emits an event; sinks subscribe to the bus.
 5. API routes only read the store. The event bus pushes notifications, not data.
 6. The base `pip install openloom` has only `httpx` + `pyyaml` as runtime deps. `fastapi`, `uvicorn`, etc. are all extras (`[ui]` / `[server]`).
-7. Composition is done by decorator (e.g. `checker.with_pre_archive(...)`), not by inheritance.
+7. Composition is done by decorator (e.g. `register_sink`, `register_checker`), not by inheritance.
 
 ## The state-change invariant
 
@@ -32,7 +38,7 @@ Every state change follows exactly one path:
 some component → store write (store_version + 1) → bus.emit(event) → sinks
 ```
 
-API routes **read** the store, they do not write to it (other than the explicit POST handlers for task create / status update / inbox trigger, which go through the harness's `add_task` / `complete_task` / `pause_task`).
+API routes **read** the store, they do not write to it (other than the explicit POST handlers for task create / status update / abort, which go through the harness's `add_task` / `complete_task` / etc.).
 
 The harness is the only writer of task state. The monitor is the only writer of session status. Sinks are passive subscribers.
 
@@ -42,18 +48,17 @@ The harness is the only writer of task state. The monitor is the only writer of 
 
 | Protocol | Purpose |
 |----------|---------|
-| `OpenCodePort` | HTTP operations the harness needs (`list_sessions`, `send_prompt_async`, `messages`, …). Implemented by `runtime.opencode.OpenCodeClient`. |
+| `OpenCodePort` | HTTP operations the harness needs (`list_sessions`, `send_prompt_async`, `messages`, `abort_session`, etc.). Implemented by `runtime.opencode.OpenCodeClient`. |
 | `StorePort` | Persisted task state. Implemented by `core.store.Store` (SQLite, single connection, WAL). |
-| `CheckerPort` | Re-check the current step before the harness decides the task is done. Implemented by `levels.manual.checker.StringChecker` and its decorator variants. |
-| `CheckResultProtocol` | Result of a check. |
 | `PromptsPort` | Spec parsing, prompt construction, message-progress heuristics. Implemented by `runtime.prompts`. |
 | `StatusPort` | Session status normalization. Implemented by `runtime.session_status`. |
+| `Sink` | The 4th party in the event-bus pipeline; the harness emits events, sinks consume them. WebSink (SSE), ConsoleSink (stdout), WebhookSink (HTTP) all implement this. |
 
 `HarnessRunner.__init__` takes these by protocol, not by class. Substituting a fake in a test is just "implement the protocol".
 
 ## Assembly: `build_harness()`
 
-The single source of truth for wiring is `runtime.factory.build_harness(settings, **kwargs)`. It returns a `HarnessBundle(harness, store, bus, client)` that `serve`, `watch`, and tests all use.
+The single source of truth for wiring is `runtime.factory.build_harness(settings, **kwargs)`. It returns a `HarnessBundle(harness, store, bus, client)` that `serve.py` uses to mount the FastAPI app, run the harness tick loop, and the monitor refresh loop.
 
 ```python
 from openloom.runtime.factory import build_harness
@@ -64,11 +69,9 @@ bundle = build_harness(settings, extra_sinks=[...])
 # bundle.client.list_sessions()
 ```
 
-`serve.py` and `watch.py` add background tasks (the inbox watcher, etc.) on top of the bundle, but the assembly path is the same.
-
 ## Cold detection
 
-Optional dependencies are imported at first use, never at module import time. This means a missing `fastapi` (because the user did not install `[ui]`) only fails when the user actually runs `openloom serve`, not at `openloom watch` startup.
+Optional dependencies are imported at first use, never at module import time. This means a missing `fastapi` (because the user did not install `[ui]`) only fails when the user actually runs `openloom serve`, not at `openloom` import time.
 
 The pattern:
 
@@ -76,31 +79,38 @@ The pattern:
 # in some module
 def some_cold_thing():
     try:
-        from fastapi import FastAPI  # or whatever
+        from fastapi import FastAPI
     except ImportError as exc:
         raise RuntimeError("install [ui] first") from exc
     return FastAPI()
 ```
 
-`tests/contracts/test_architecture.py` scans `core/` and `__init__.py` files for `try: import` to enforce this.
+Sinks are also cold-detected: `WebSink` and `ConsoleSink` register themselves on the `Sink` registry via `@register_sink("web")` / `@register_sink("console")` decorators. The server module imports them to ensure registration before the harness queries the registry for a sink of a given name.
 
-## What "level" means
+## The 0.12 cut: what we removed
 
-A `level/` is a self-contained capability that can be loaded or skipped without affecting the rest of the system:
+0.12 is a YAGNI cut. The following pieces existed in 0.11 and are now gone, with the reasons:
 
-| Level | What it adds |
-|-------|--------------|
-| `manual` | The `openloom watch` runner: harness loop + a checker + a console sink. |
-| `config` | `openloom init` / `openloom.yaml` parsing. |
-| `openspec` | OpenSpec checkbox completion checks. |
-| `ui` | Web dashboard (`[ui]` extra). |
-| `validate` | Pre-archive validation hooks (run the project's pytest/mypy). |
-| `github` | GitHub integration. |
-| `inbox` | `InboxWatcher` for `OPENLOOM_INBOX_DIR` polling. |
-| `notify` | Webhook + file sinks. |
-| `server` | The `openloom serve` entry point (FastAPI app + uvicorn). |
+| Removed | Reason |
+|---------|--------|
+| `levels/manual/` | The `openloom watch` runner with manual checks / acceptance / step-acknowledgement. Webhook handlers don't need this — the agent loop is the harness loop. |
+| `levels/inbox/` | File-watch dispatch. The user wrote markdown files to a directory to enqueue tasks. Webhook replaces this with a single POST. |
+| `levels/config/` | The `openloom init` command that wrote `openloom.yaml`. Webhook handlers now construct the task directly. |
+| `levels/openspec/` | OpenSpec checkbox completion checks. OpenSpec is a third-party spec; if you need this, run it from your project. |
+| `levels/notify/file.py` | File-based notification sink. Webhook is the only delivery path. |
+| `runtime/planner.py` | AI task planner. Removed because `TaskSpec` no longer carries `steps` / `acceptance`, so plans have nowhere to land. |
+| `EventType.SESSION_STALE_BUSY` | The stale-busy detector. The 0.11 monitor ran an N-pass busy check on every session and emitted this event. With manual-mode gone there is no long-lived observer per session; consumers detect stuck sessions themselves by watching `recent_activity.completed_at`. |
+| `EventType.LOG_LINE` | The "abort failed" log line. Only manual-mode's abort path emitted this. |
+| `TaskSpec` extras | The old `TaskSpec` had `steps`, `acceptance`, `step_acceptance`, `mode`, `agent`, `check_interval_seconds`, `initial_prompt`, `auto_accept_permissions`, `max_tokens`, `max_runtime_minutes`, `abort_session`. The 0.12 spec is just `name`, `workspace`, `goal`. The harness hardcodes a single 8-second poll interval. |
+| `HarnessRunner._check_task` nudge machinery | The 0.11 harness sent "did you finish?" / "continue to step N" / "answer the user's question" prompts. With manual-mode gone, the agent is the source of truth on whether it's done. The harness only emits `TASK_UPDATED` with the current status. |
+| `SessionMonitor.stale_busy_sessions` / `forget_session` / `attach_prompts` | All stale-busy infrastructure. |
 
-A level that needs runtime HTTP, FastAPI, or a database pulls those in as cold-detected deps. A level that needs no extras (e.g. `manual`) runs in the base install.
+The user can still:
+
+- Create tasks from anywhere via `POST /api/tasks`.
+- Watch live tasks in the web dashboard (no per-task YAML spec required).
+- Receive notifications on any webhook for any subset of events.
+- Abort and restart a session from a phone with two HTTP calls.
 
 ## State diagram (one tick)
 
@@ -108,31 +118,20 @@ A level that needs runtime HTTP, FastAPI, or a database pulls those in as cold-d
 harness.tick()
   ├─ store.list_due_tasks()  ─── reads only
   ├─ for each task:
-  │    ├─ spec = PromptsPort.from_dict(task["spec"])
-  │    ├─ if task.status == "pending": _start_task()
-  │    │     ├─ if spec.abort_session && session exists: client.abort_session()
-  │    │     ├─ client.send_prompt_async(...)
-  │    │     └─ store.update_task_status("running")
-  │    │         └─ bus.emit(TASK_STARTED) → sinks
+  │    ├─ if pending → _start_task()
+  │    │     ├─ if active_session_id is set: list_sessions() to verify
+  │    │     ├─ else: create_session() to start fresh
+  │    │     └─ send_prompt_async() with spec.goal
   │    └─ else: _check_task()
-  │         ├─ checker.check(spec, messages)
-  │         ├─ detect_progress(...)
-  │         └─ store.update_task_progress(...)
-  │             └─ bus.emit(TASK_UPDATED | TASK_COMPLETED | TASK_FAILED)
+  │         ├─ session_status() + messages()  ─── reads only
+  │         ├─ if busy: status="running"
+  │         ├─ elif permission_waiting: status="waiting"
+  │         ├─ elif latest assistant says TASK COMPLETE: status="completed" → emit TASK_COMPLETED
+  │         └─ else: status="running" (idle, awaiting next turn)
   └─ return
-```
 
-`monitor.refresh()` runs on its own 8-second loop:
-
-```
 monitor.refresh()
-  ├─ client.list_sessions()  ─── reads
-  ├─ client.session_status()  ─── reads
-  ├─ for busy sessions: client.messages(sid, limit=4)  ─── reads
-  │   └─ detect latest completed timestamp (for stale-busy tracking)
-  ├─ update _stale_count per session
-  ├─ when threshold crossed: bus.emit(SESSION_STALE_BUSY) → sinks
-  └─ return
+  ├─ list_sessions()
+  ├─ session_status()  ─── reads only
+  └─ publish monitor.sessions / monitor.status / monitor.by_directory
 ```
-
-The harness and the monitor share the `EventBus` but never share state directly. They each write to the same bus and read from the same store, which is the only correct way to compose them.

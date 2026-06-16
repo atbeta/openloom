@@ -18,7 +18,6 @@ def create_app(
     monitor: Any = None,
     recent: Any = None,
     settings: Any = None,
-    parse_spec: Any = None,
     pick_folder: Any = None,
 ):
     require_fastapi()
@@ -64,118 +63,43 @@ def create_app(
     async def list_tasks():
         return task_routes.tasks_list(store)
 
-    @app.post("/api/tasks/plan")
-    async def generate_task_plan(req: Request):
-        if client is None or settings is None:
-            raise HTTPException(status_code=503, detail="Plan generation requires OpenCode client")
-        body = await req.json()
-        intent = str(body.get("intent") or body.get("prompt") or "").strip()
-        if not intent:
-            raise HTTPException(status_code=400, detail="intent is required")
-        session_id = body.get("sessionId")
-        from pathlib import Path as _P
-
-        from openloom.runtime.planner import generate_plan
-
-        cwd: str
-        if session_id:
-            try:
-                sessions = await client.list_sessions()
-            except Exception as exc:  # noqa: BLE001
-                raise HTTPException(status_code=502, detail=f"opencode: {exc}") from exc
-            match = next((s for s in sessions if s.get("id") == session_id), None)
-            if not match:
-                raise HTTPException(status_code=404, detail="Session not found")
-            directory = match.get("directory") or str(body.get("workspace") or "")
-            if not directory:
-                raise HTTPException(status_code=400, detail="Cannot resolve workspace for session")
-            cwd = str(_P(directory).expanduser().resolve())
-        else:
-            workspace = str(body.get("workspace") or "").strip()
-            if not workspace:
-                raise HTTPException(status_code=400, detail="workspace is required")
-            cwd = str(_P(workspace).expanduser().resolve())
-
-        agent = str(body.get("agent") or "opencode")
-        agent_name = None if agent == "opencode" else agent
-        try:
-            plan = await generate_plan(client, workspace=cwd, intent=intent, agent=agent_name)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        except Exception as exc:  # noqa: BLE001
-            raise HTTPException(status_code=502, detail=f"plan generation failed: {exc}") from exc
-        return {"ok": True, "plan": plan.to_dict(), "workspace": cwd}
-
     @app.post("/api/tasks")
     async def create_task(req: Request):
-        if settings is None:
-            raise HTTPException(status_code=501, detail="Task creation needs settings binding")
+        """Webhook-friendly task creation.
+
+        Body (all fields required unless marked optional):
+
+          {
+            "name":      "Fix the bug",          # optional, default "Untitled task"
+            "workspace": "/abs/path/to/proj",    # required if no sessionId
+            "goal":      "What the agent should do — the only field the
+                            agent sees. Sent verbatim to OpenCode as the
+                            first user turn.",
+            "sessionId": "ses_..."                 # optional; bind to existing session
+          }
+
+        Returns:
+          {"ok": true, "taskId": "task_abc...", "status": "pending",
+           "name": "...", "workspace": "...", "sessionId": null|"ses_..."}
+        """
         body = await req.json()
-        session_id = body.get("sessionId")
-
-        plan_data = body.get("plan")
-        prompt_text = body.get("prompt")
-        intent_text = body.get("intent")
-        spec_text = body.get("spec")
-        interval: int | None = None
-        if "checkIntervalMinutes" in body:
-            from openloom.runtime.prompts import normalize_check_interval_seconds
-
-            interval = normalize_check_interval_seconds(minutes=int(body["checkIntervalMinutes"]))
-        elif body.get("checkIntervalSeconds") is not None:
-            from openloom.runtime.prompts import normalize_check_interval_seconds
-
-            interval = normalize_check_interval_seconds(value=int(body["checkIntervalSeconds"]))
-
-        agent = str(body.get("agent") or "opencode")
-        mode = str(body.get("mode") or "normal")
-
-        if isinstance(plan_data, dict):
-            from openloom.runtime.planner import TaskPlan, task_spec_from_plan
-
-            intent = str(intent_text or prompt_text or plan_data.get("intent") or "").strip()
-            try:
-                plan = TaskPlan.from_dict({**plan_data, "intent": plan_data.get("intent") or intent})
-                spec = task_spec_from_plan(
-                    plan,
-                    str(body.get("workspace") or ""),
-                    check_interval_seconds=interval,
-                    agent=agent,
-                    mode=mode,
-                )
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-        elif prompt_text is not None:
-            from openloom.runtime.prompts import task_spec_from_prompt
-
-            prompt = str(prompt_text).strip()
-            if not prompt:
-                raise HTTPException(status_code=400, detail="prompt is required")
-            try:
-                spec = task_spec_from_prompt(
-                    prompt,
-                    str(body.get("workspace") or ""),
-                    check_interval_seconds=interval,
-                    agent=agent,
-                    mode=mode,
-                )
-            except ValueError as exc:
-                raise HTTPException(status_code=400, detail=str(exc)) from exc
-        elif spec_text:
-            if parse_spec is None:
-                raise HTTPException(status_code=501, detail="YAML spec needs parse_spec binding")
-            try:
-                spec = parse_spec(str(spec_text), body.get("format", "yaml"))
-            except Exception as exc:  # noqa: BLE001
-                raise HTTPException(status_code=400, detail=f"Invalid task spec: {exc}") from exc
-        else:
-            raise HTTPException(status_code=400, detail="plan, prompt, or spec is required")
-
-        auto_accept = bool(body["autoAcceptPermissions"]) if "autoAcceptPermissions" in body else False
         from openloom.runtime.prompts import TaskSpec
 
-        spec_extra: dict[str, Any] = {"auto_accept_permissions": auto_accept}
-        spec = TaskSpec.from_dict({**spec.to_dict(), **spec_extra})
+        name = str(body.get("name") or "Untitled task").strip() or "Untitled task"
+        goal = str(body.get("goal") or "").strip()
+        if not goal:
+            raise HTTPException(status_code=400, detail="goal is required")
+
+        session_id = body.get("sessionId") or body.get("session_id")
+        if session_id is not None:
+            session_id = str(session_id).strip() or None
+        workspace = str(body.get("workspace") or "").strip()
+
+        if not session_id and not workspace:
+            raise HTTPException(
+                status_code=400,
+                detail="either workspace or sessionId is required",
+            )
 
         from pathlib import Path as _P
 
@@ -190,23 +114,19 @@ def create_app(
             match = next((s for s in sessions if s.get("id") == session_id), None)
             if not match:
                 raise HTTPException(status_code=404, detail="Session not found")
-            directory = match.get("directory") or spec.workspace
+            directory = match.get("directory") or workspace
             if not directory:
-                raise HTTPException(status_code=400, detail="Cannot resolve workspace for session")
+                raise HTTPException(
+                    status_code=400, detail="Cannot resolve workspace for session",
+                )
             cwd = str(_P(directory).expanduser().resolve())
         else:
-            if not spec.workspace:
-                raise HTTPException(status_code=400, detail="workspace is required")
-            cwd = str(_P(spec.workspace).expanduser().resolve())
+            cwd = str(_P(workspace).expanduser().resolve())
 
-        spec.workspace = cwd
+        spec = TaskSpec(name=name, workspace=cwd, goal=goal)
 
         runner = _require_harness()
-        task_id = runner.add_task(
-            spec,
-            active_session_id=session_id,
-            session_ids=[session_id] if session_id else None,
-        )
+        task_id = runner.add_task(spec, active_session_id=session_id)
         if recent is not None and not session_id:
             recent.record(cwd)
         return {
@@ -214,16 +134,30 @@ def create_app(
             "taskId": task_id,
             "status": "pending",
             "name": spec.name,
-            "watch": True,
+            "workspace": spec.workspace,
             "sessionId": session_id,
-            "autoAcceptPermissions": spec.auto_accept_permissions,
-            "steps": len(spec.steps),
-            "acceptance": len(spec.acceptance),
         }
 
     @app.get("/api/tasks/{task_id}")
     async def get_task(task_id: str):
         return task_routes.task_detail(store, task_id)
+
+    @app.post("/api/tasks/{task_id}/abort")
+    async def abort_task(task_id: str):
+        """Release any in-flight agent loop on the task's session.
+
+        Calls ``POST /session/{id}/abort`` on OpenCode. The task
+        itself stays in the store (its state machine decides
+        whether to mark it completed / failed on the next tick);
+        the abort simply frees the agent so a follow-up prompt
+        lands on a clean transcript.
+        """
+        if client is None:
+            raise HTTPException(status_code=503, detail="OpenCode client unavailable")
+        try:
+            return await task_routes.abort_task(client, _require_harness(), task_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.post("/api/tasks/{task_id}/pause")
     async def pause(task_id: str):
@@ -240,28 +174,6 @@ def create_app(
     @app.get("/api/events")
     async def sse_events():
         return await task_routes.event_stream(store, web_sink)
-
-    @app.post("/api/inbox/trigger")
-    async def inbox_trigger_endpoint(req: Request):
-        """Webhook entry — accept markdown text (or a file path on disk)
-        and dispatch it as a task. Mirrors the file-watcher's behaviour
-        so callers without access to the synced directory can still
-        push tasks."""
-        if parse_spec is None and settings is None:
-            raise HTTPException(
-                status_code=501,
-                detail="inbox trigger needs parse_spec or settings binding",
-            )
-        body = await req.json()
-        try:
-            result = task_routes.inbox_trigger(
-                _require_harness(),
-                parse_spec,
-                body,
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return result
 
     @app.post("/api/tasks/{task_id}/archive")
     async def archive(task_id: str):

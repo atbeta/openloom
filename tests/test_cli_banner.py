@@ -40,15 +40,11 @@ def test_banner_verbose_includes_env_and_notify(
     db = tmp_path / "openloom.sqlite3"  # type: ignore[operator]
     monkeypatch.setenv("OPENLOOM_DATABASE", str(db))
     monkeypatch.setenv("OPENLOOM_NOTIFY_WEBHOOK_URLS", "https://hook.example/x")
-    monkeypatch.setenv("OPENLOOM_INBOX_DIR", str(tmp_path / "inbox"))  # type: ignore[operator]
 
     settings = Settings.from_env()
     _print_banner(_args(verbose=True), settings)
     out = capsys.readouterr().out
 
-    # Inbox block visible
-    assert "inbox" in out
-    assert "task.md" in out  # default filename
     # Notify block visible with the URL
     assert "https://hook.example/x" in out
     # Env block visible

@@ -89,42 +89,23 @@ class CheckResultProtocol(Protocol):
 
 @runtime_checkable
 class PromptsPort(Protocol):
-    """Minimal surface HarnessRunner needs from the prompts module."""
+    """Minimal surface HarnessRunner needs from the prompts module.
+
+    The old protocol declared a dozen methods for the manual-mode
+    nudge / acceptance / step-acknowledgement protocol. The 0.12
+    webhook-only cut removed every one of those — the harness now
+    only needs the three primitives that survive in
+    ``runtime.prompts``: the TaskSpec type itself, a busy signal
+    for the monitor, and the recent-activity enricher for the
+    notify payload. New webhook handlers can also call
+    ``detect_progress`` client-side, but that is a pure function
+    on a string and does not need to live on the protocol.
+    """
 
     # Class-like: TaskSpec constructor (type[Any] — has .from_dict / .to_dict)
     TaskSpec: Any
 
-    # Module constants
-    MIN_CHECK_INTERVAL_SECONDS: int
-    MAX_IDLE_NUDGES: int
-
     def messages_indicate_busy(self, messages: list[dict[str, Any]]) -> bool: ...
-    def task_is_finished(
-        self,
-        *,
-        task_complete: bool,
-        step_done: int,
-        acceptance_checked: int,
-        step_count: int,
-        acceptance_count: int,
-    ) -> bool: ...
-    def needs_asking_reply(self, messages: list[dict[str, Any]]) -> bool: ...
-    def auto_decide_reply(self, *, step_name: str | None = None) -> str: ...
-    def build_final_checks_nudge(self, spec: Any) -> str: ...
-    def build_bootstrap_prompt(self, spec: Any, *, current_step: int = 0) -> str: ...
-    def build_periodic_check_prompt(
-        self,
-        spec: Any,
-        *,
-        current_step: int,
-        progress: dict[str, Any],
-        completed_steps: list[int],
-    ) -> str: ...
-    def already_nudged(
-        self, task: dict[str, Any], nudge: str, current_signature: str = "",
-    ) -> bool: ...
-    def nudge_fingerprint(self, text: str) -> str: ...
-    def assistant_message_signature(self, messages: list[dict[str, Any]]) -> str: ...
     def recent_assistant_activity(
         self, messages: list[dict[str, Any]], *, n: int = ...,
     ) -> list[dict[str, Any]]: ...

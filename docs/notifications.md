@@ -1,50 +1,48 @@
 # Notifications
 
-OpenLoom emits events for every state change in the harness (task lifecycle, log lines, **session-stale detection**). You can fan those events out to webhooks, files on disk, or both.
+OpenLoom emits a stream of events for every task lifecycle change. Configure webhook URLs in the environment to receive them as JSON POSTs.
 
 ## Configure
 
 ```bash
-# Webhook — one POST per event, per URL
+# Single URL
 export OPENLOOM_NOTIFY_WEBHOOK_URLS='https://hooks.example.com/openloom'
 
-# File sink — one JSON file per event, per directory
-export OPENLOOM_NOTIFY_FILE_DIRS=/var/log/openloom
-export OPENLOOM_NOTIFY_FILE_PREFIX=openloom
+# Multiple URLs (comma- or space-separated)
+export OPENLOOM_NOTIFY_WEBHOOK_URLS='https://hooks.slack.com/x1,https://hooks.discord.com/x2'
+
+# Optional: only forward specific events
+export OPENLOOM_NOTIFY_WEBHOOK_EVENTS='TASK_COMPLETED,TASK_FAILED'
 ```
 
-Multiple URLs / directories are space- or comma-separated. Each becomes an independent sink — the same event fans out to all of them. By default each sink forwards every event type.
-
-To filter, set `OPENLOOM_NOTIFY_WEBHOOK_EVENTS` to a comma- or space-separated list of event names. File sinks are filtered by filename pattern at the directory level, so set one directory per filter if you want a strict partition.
+Webhooks receive a POST per event. Default timeout is 3 seconds; failures are logged but do not block the harness.
 
 ## Event types
 
 | Event | When |
 |-------|------|
-| `TASK_CREATED` | A new task was added to the store. `data` includes the parsed spec and workspace. |
-| `TASK_STARTED` | The harness started the first turn of a task. |
-| `TASK_UPDATED` | Progress, status, or step change. `data` includes `summary` and optional `error`. |
-| `TASK_COMPLETED` | The agent reported completion (or auto-archive). |
-| `TASK_FAILED` | Budget exceeded, session lost, or other unrecoverable error. |
-| `LOG_LINE` | Notable log line (e.g. `session abort failed`). |
-| `SESSION_STALE_BUSY` | A session has been busy for `OPENLOOM_STALE_BUSY_CHECKS` consecutive checks with no new completed message. **One-shot per stuck episode.** |
+| `TASK_CREATED` | A new task was added to the store (POST /api/tasks). |
+| `TASK_STARTED` | The harness bound the task to an OpenCode session and sent the first user turn. |
+| `TASK_UPDATED` | A periodic poll observed a status / progress / message change. Fires roughly every 8 seconds while a task is running. |
+| `TASK_COMPLETED` | The agent reported `TASK COMPLETE` and the harness has confirmed no further work is pending. |
+| `TASK_FAILED` | Unrecoverable error (budget exceeded, session lost, harness check raised). |
+
+The full lifecycle of a single task is therefore `TASK_CREATED → TASK_STARTED → N × TASK_UPDATED → TASK_COMPLETED` (or `TASK_FAILED`).
 
 ## Payload schema
-
-All sinks receive the same JSON shape:
 
 ```json
 {
   "event": "TASK_COMPLETED",
-  "task_id": "task_a1b2c3d4e5f6",
+  "task_id": "task_abc123",
+  "task_name": "Fix the type error",
   "timestamp": 1749999999.123,
+  "timestamp_iso": "2026-06-15T00:00:00Z",
   "store_version": 42,
   "data": {
+    "status": "completed",
+    "progress": 1.0,
     "summary": "Agent reported TASK COMPLETE",
-    "step_done": 3,
-    "step_count": 3,
-    "active_session_id": "ses_abc",
-    "replaced_task_ids": [],
     "recent_activity": [
       {
         "text": "All three steps are now green.",
@@ -54,106 +52,77 @@ All sinks receive the same JSON shape:
            "input_excerpt": "pytest -x"}
         ]
       }
-    ]
+    ],
+    "active_session_id": "ses_xyz789"
   }
 }
 ```
 
-`data.recent_activity` is a list of the last few assistant messages from the session's transcript (default 3; override with `OPENLOOM_NOTIFY_RECENT_MESSAGES`). Each entry has:
+### `task_name` and `timestamp_iso`
 
-| Field | Meaning |
-|-------|---------|
-| `text` | The agent's reply text, truncated to 1 000 characters. |
-| `completed_at` | The Unix-epoch timestamp the message finished, or `0.0` if unknown. |
-| `tools` | A list of `{"tool", "status", "input_excerpt"}` for the tool calls in that message. `input_excerpt` is the JSON-serialised tool input truncated to 80 characters. Tool **output is omitted on purpose** — it is unbounded and rarely what a remote operator needs. |
+Always present. `task_name` is the human-readable label set by the webhook handler (default: "Untitled task"). `timestamp_iso` is the same epoch as `timestamp` but rendered as `2026-06-15T00:00:00Z` for display in webhook handlers that don't want to format a float themselves.
 
-The list is the right size to fit in a Slack or Discord webhook payload even when the agent is mid-investigation: ~3 KB per event. Tool input is JSON-serialised so file paths and command snippets survive intact, and the truncation is marked with `…` so the receiver can tell the input was clipped.
+### `data.recent_activity`
 
-The field is best-effort: harness events emitted from the periodic check path include it; rare paths that do not have access to the message log (the manual `pause_task` / `complete_task` API calls, the catch-all `tick()` exception handler, and `TASK_CREATED` / `TASK_STARTED` / `LOG_LINE`) omit it. The shape is always a JSON list, possibly empty.
-
-### Session binding and task handovers
-
-Two fields on `data` make session-bound dispatch observable to a webhook handler:
-
-| Field | When | Meaning |
-|-------|------|---------|
-| `active_session_id` | `TASK_UPDATED`, `TASK_COMPLETED`, `TASK_FAILED`, `TASK_STARTED` | The OpenCode session this task is bound to. Always present on events emitted from the check path; `null` for a task with no session binding. |
-| `replaced_task_ids` | `TASK_CREATED`, `TASK_UPDATED`, `TASK_COMPLETED`, `TASK_FAILED` | List of task ids that this task superseded. Populated when the new task was dispatched to a session that already had a live task — those prior tasks were auto-archived so the new one is the sole observer of the session. Empty (or absent) when no takeover happened. |
-| `replaced_by_session` | `TASK_UPDATED` (auto-archive event) | Set on the TASK_UPDATED that flips the *archived* task to `status=archived`. The session id of the new task that took over. The receiving end can show a "task was taken over" badge using the archived task's id and this field. |
-
-For session-level events, `task_id` is `""` and the subject lives in `data`:
+A list of the last `OPENLOOM_NOTIFY_RECENT_MESSAGES` (default 3) assistant messages from the session transcript. Each entry is:
 
 ```json
 {
-  "event": "SESSION_STALE_BUSY",
-  "task_id": "",
-  "timestamp": 1749999999.123,
-  "store_version": 0,
-  "data": {
-    "session_id": "ses_abc",
-    "title": "Resume the long task",
-    "directory": "/Users/you/project",
-    "consecutive_busy_checks": 10,
-    "threshold_checks": 10,
-    "stuck_for_seconds": 84,
-    "recent_activity": [
-      {
-        "text": "Running npm install — that is the long step.",
-        "completed_at": 1749999900.0,
-        "tools": [
-          {"tool": "bash", "status": "running",
-           "input_excerpt": "npm install --no-audit --no-fund"}
-        ]
-      }
-    ]
-  }
+  "text": "<truncated to 1000 chars>",
+  "completed_at": <float epoch, 0 if unknown>,
+  "tools": [
+    {"tool": "bash", "status": "completed",
+     "input_excerpt": "<input JSON, truncated to 80 chars>"}
+  ]
 }
 ```
 
-`SESSION_STALE_BUSY` also carries a `recent_activity` excerpt so the receiving end can tell at a glance what the agent was last working on when it got stuck — typically a long-running `bash` invocation whose `status` is `running`.
+The list is the right size to fit in a Slack or Discord webhook payload even when the agent is mid-investigation: ~3 KB per event. Tool input is JSON-serialised so file paths and command snippets survive intact, and the truncation is marked with `…` so the receiver can tell the input was clipped. Tool **output is omitted on purpose** — it is unbounded and rarely what a remote operator needs.
 
-## `SESSION_STALE_BUSY`
+The field is best-effort: harness events emitted from the periodic check path include it; rare paths that do not have access to the message log (the manual `pause_task` / `complete_task` API calls, the catch-all `tick()` exception handler) omit it. The shape is always a JSON list, possibly empty.
 
-This event is the linchpin of the "notice from anywhere" loop. It fires when a session has been observed busy on the OpenCode status map (or detected as busy by a recent-messages probe) for `OPENLOOM_STALE_BUSY_CHECKS` consecutive monitor refreshes, with **no new completed message** in that window.
+### `data.active_session_id`
 
-A long-running but progressing tool (`npm install`, `docker build`) advances the latest `time.completed` timestamp on every refresh, so the counter resets and the event does not fire. Only a session that stays busy *with no progress* — typically one blocked on a hung child process — crosses the threshold.
+Always present on `TASK_UPDATED` / `TASK_COMPLETED` / `TASK_FAILED` / `TASK_STARTED`. `null` for a task with no session binding (rare — the dashboard will only show one of those for completed tasks).
 
-The event is **one-shot per stuck episode**: once the session goes idle or shows fresh progress, the latch releases so a future stuck episode can fire again. This stops the webhook from flooding.
+## Detecting a stuck session
 
-### Recovery flow
+0.12 removed the `SESSION_STALE_BUSY` event. The webhook will not tell you "this session has been busy for 10 minutes" — instead, the `TASK_UPDATED` events simply stop arriving for a task whose session is busy but not making progress (the harness still emits them, but the recent_activity field will be empty or the same as the previous event).
 
-The typical recovery is the [abort-and-resume](inbox.md#abort-and-resume) flow:
+To detect a stuck session, the consumer should:
 
-1. `SESSION_STALE_BUSY` hits your webhook / phone.
-2. You write a markdown with `session: <id>` and `abort: true` into the inbox directory.
-3. OpenLoom aborts the in-flight tool and sends your new goal as the next turn.
-4. The agent picks up your new task immediately.
+1. Watch `TASK_UPDATED` events for a given `task_id`.
+2. Compare consecutive `data.recent_activity[*].completed_at` timestamps.
+3. If the timestamps are not advancing for 60+ seconds, treat the task as stuck.
+4. `POST /api/tasks/{id}/abort` to break the agent loop.
+5. `POST /api/tasks` with the same `sessionId` and a new `goal` to take over.
 
-## Webhook delivery
+This puts the "is it stuck?" decision on the webhook consumer, which knows its own latency tolerances better than a hard-coded server-side threshold.
 
-`WebhookSink` uses a single long-lived `httpx.Client` per URL. The default timeout is 3 s; failures are logged but do not block the harness. Successful delivery requires a `2xx` response; `4xx` and `5xx` are logged as warnings.
+## Webhook delivery semantics
+
+`WebhookSink` uses a single long-lived `httpx.Client` per URL. The default timeout is 3 s; failures are logged but do not block the harness. A successful delivery requires a `2xx` response; `4xx` and `5xx` are logged as warnings.
 
 The `X-OpenLoom-Event` header carries the event name for routing on the receiving end. Body is JSON.
 
-## File sink delivery
+## Example: full task lifecycle as a webhook receiver
 
-`FileSink` writes one JSON file per event into the configured directory:
+```python
+# A minimal Flask receiver that logs every event to stdout
+import json
+from flask import Flask, request
 
+app = Flask(__name__)
+
+@app.post("/openloom")
+def receive():
+    event = request.json
+    print(f"[{event['event']}] {event['task_name']} (store v{event['store_version']})")
+    if event["event"] == "TASK_UPDATED":
+        for entry in event["data"].get("recent_activity", []):
+            if entry["text"]:
+                print(f"  agent: {entry['text'][:80]}")
+            for tool in entry["tools"]:
+                print(f"  tool:  {tool['tool']} {tool['status']} {tool['input_excerpt']!r}")
+    return "", 200
 ```
-openloom-TASK_COMPLETED-20260514T120000-123.json
-openloom-SESSION_STALE_BUSY-20260514T120100-004.json
-```
-
-Filename pattern: `<prefix>-<EVENT_NAME>-<UTC ISO 8601>-<ms suffix>.json`. The millisecond suffix keeps ordering unique when multiple events land in the same second.
-
-Files are written atomically (single `path.write_text()`); a write failure logs a warning and the event is dropped (no retry queue). The directory is created at startup if it does not exist.
-
-## Where events are produced
-
-All state changes flow through the event bus. API routes read the store; the bus pushes notifications only. There is no in-band coupling between `notify` and the harness — adding or removing sinks does not affect task scheduling.
-
-This means:
-
-- If you disable webhooks, the harness still runs identically.
-- If a webhook is slow / down, the harness loop is not blocked.
-- Sinks are cold-detected: they are imported lazily by `openloom/levels/notify/__init__.py:build_sinks`, so a missing optional dep does not break the core.

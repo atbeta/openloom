@@ -13,7 +13,6 @@ async def run_serve(
     settings: Any,
     *,
     extra_sinks: Any = None,
-    background_tasks_factory: Any = None,
 ) -> None:
     from openloom.server.cold import require_fastapi
     require_fastapi()
@@ -21,8 +20,9 @@ async def run_serve(
     import uvicorn
 
     from openloom.core.registry import get_sink
+    from openloom.levels.server.console_sink import ConsoleSink  # noqa: F401 — registers sink
     from openloom.levels.server.monitor import SessionMonitor
-    from openloom.runtime import prompts
+    from openloom.levels.server.web_sink import WebSink  # noqa: F401 — registers sink
     from openloom.runtime.factory import build_harness
     from openloom.runtime.opencode import format_opencode_unreachable_help
     from openloom.server.app import create_app
@@ -47,19 +47,7 @@ async def run_serve(
             file=sys.stderr,
         )
 
-    monitor = SessionMonitor(
-        client, stale_busy_threshold=settings.stale_busy_checks,
-    )
-    monitor.on_event(bus.emit)
-    monitor.attach_prompts(prompts, recent_n=settings.notify_recent_messages)
-    # When a task is taken off a session (manual archive,
-    # manual pause / complete, or auto-pause for budget), the
-    # monitor should drop its per-session state — otherwise
-    # the "N stuck" pill on the dashboard would outlive the
-    # task that owns the session, since the upstream
-    # session list cleanup only fires when OpenCode itself
-    # forgets the session.
-    harness.on_session_dropped(monitor.forget_session)
+    monitor = SessionMonitor(client)
 
     await monitor.refresh()
 
@@ -82,16 +70,10 @@ async def run_serve(
     harness_task = asyncio.create_task(harness_loop())
     monitor_task = asyncio.create_task(monitor_loop())
 
-    extra_background_tasks: list[asyncio.Task[Any]] = []
-    if background_tasks_factory is not None:
-        extra_background_tasks = list(background_tasks_factory(harness) or [])
-
     app = create_app(
         harness=harness, store=store, bus=bus, web_sink=web_sink,
         client=client, monitor=monitor,
         recent=recent, settings=settings,
-        parse_spec=prompts.parse_task_spec,
-        pick_folder=_native_pick_folder,
     )
 
     due = store.list_due_tasks()
@@ -100,19 +82,13 @@ async def run_serve(
     print(f"  tasks:    {len(due)} pending/running")
     print(f"  sessions: {len(monitor.sessions)} visible")
     n_webhooks = len(settings.notify.webhooks)
-    n_files = len(settings.notify.files)
     if n_webhooks:
         print(f"  notify:   {n_webhooks} webhook(s)")
-    if n_files:
-        print(f"  notify:   {n_files} file sink(s)")
-    if settings.inbox_dir is not None:
-        print(
-            f"  inbox:    {settings.inbox_dir}/{settings.inbox_filename}"
-            f"  poll={settings.inbox_poll_interval_seconds:.0f}s"
-        )
     print()
 
-    config = uvicorn.Config(app, host=settings.ui_host, port=settings.ui_port, log_level="warning")
+    config = uvicorn.Config(
+        app, host=settings.ui_host, port=settings.ui_port, log_level="warning",
+    )
     server = uvicorn.Server(config)
 
     try:
@@ -120,15 +96,10 @@ async def run_serve(
     finally:
         harness_task.cancel()
         monitor_task.cancel()
-        for t in extra_background_tasks:
-            t.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await harness_task
         with contextlib.suppress(asyncio.CancelledError):
             await monitor_task
-        for t in extra_background_tasks:
-            with contextlib.suppress(asyncio.CancelledError):
-                await t
 
 
 def _native_pick_folder(initial: str | None = None) -> str | None:

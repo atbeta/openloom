@@ -1,6 +1,6 @@
 # Configuration
 
-OpenLoom is configured entirely through environment variables. There are no config files (besides `openloom.yaml` for a single watched spec, and inbox markdown files for remote dispatch).
+OpenLoom is configured entirely through environment variables. There is no configuration file (the `openloom watch` runner that took a YAML spec is gone in 0.12 — webhook handlers now construct the task directly).
 
 ## OpenCode connection
 
@@ -10,7 +10,7 @@ OpenLoom is configured entirely through environment variables. There are no conf
 | `OPENLOOM_OPENCODE_USERNAME` | `opencode` | Basic auth user. Only used if `OPENLOOM_OPENCODE_PASSWORD` is non-empty. |
 | `OPENLOOM_OPENCODE_PASSWORD` | *(empty)* | Basic auth password. If empty, no auth header is sent. |
 
-> The same `OPENLOOM_*` prefix is intentional — do not commit these. They are read once at startup; the same `Settings` object is used for the lifetime of the process.
+The same `OPENLOOM_*` prefix is intentional — do not commit these. They are read once at startup; the same `Settings` object is used for the lifetime of the process.
 
 ## Storage and web server
 
@@ -19,6 +19,8 @@ OpenLoom is configured entirely through environment variables. There are no conf
 | `OPENLOOM_DATABASE` | `.openloom/openloom.sqlite3` | Path to the SQLite task store. Relative paths are resolved against the process cwd at startup. |
 | `OPENLOOM_UI_HOST` | `127.0.0.1` | Bind address for the web dashboard. |
 | `OPENLOOM_UI_PORT` | `55413` | Bind port for the web dashboard. |
+
+The CLI flags `--host` and `--port` override `OPENLOOM_UI_HOST` and `OPENLOOM_UI_PORT` at startup. Override happens after the env vars are read, so any webhook consumers see consistent values.
 
 ## Task budgets
 
@@ -29,69 +31,34 @@ Soft caps applied at the harness level (per task, from creation time).
 | `OPENLOOM_MAX_TASK_TOKENS` | *(unset)* | Token cap derived from OpenCode's `/session/stats` endpoint. A task that exceeds this is marked failed at its next check. |
 | `OPENLOOM_MAX_TASK_RUNTIME_MINUTES` | *(unset)* | Wall-clock minutes since the task was created. A task that exceeds this is marked failed at its next check. |
 
-Both checks are evaluated at the same cadence as the task's `check_interval`. A long-running but progressing task is **not** interrupted mid-tool — the harness only fails the task on the next check tick.
-
-## Inbox
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `OPENLOOM_INBOX_DIR` | *(unset)* | Enables the inbox. Path to a directory OpenLoom polls. The directory is created if it does not exist. |
-| `OPENLOOM_INBOX_FILENAME` | `task.md` | Single-filename mode. OpenLoom looks for this exact filename in `INBOX_DIR`. After consumption, the file is renamed to `<filename>.processed-<task-id>`. |
-| `OPENLOOM_INBOX_POLL_SECONDS` | `30.0` | Polling interval (clamped to a minimum of 1.0). |
-| `OPENLOOM_INBOX_DEFAULT_WORKSPACE` | *(unset)* | Fallback `workspace:` when the markdown omits it. |
-| `OPENLOOM_INBOX_DEFAULT_SESSION` | *(unset)* | Fallback `session:` id when the markdown omits it. Used to bind inbox tasks to a long-lived session by default. |
-
-Without `OPENLOOM_INBOX_DIR` the inbox dispatcher is not started and the inbox card in the dashboard reads `Off`.
-
-See [inbox.md](inbox.md) for the full markdown schema, including the `session:` and `abort:` frontmatter keys.
+Both checks are evaluated at the same cadence as the harness's poll loop (default 8 s). A long-running but progressing task is **not** interrupted mid-tool; the harness only fails the task on the next check.
 
 ## Notifications
 
-Webhook and file sinks receive every harness event by default; you can filter by event name.
+Webhook is the only delivery path in 0.12. The previous file-based notification sink is removed.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `OPENLOOM_NOTIFY_WEBHOOK_URLS` | *(unset)* | Comma- or space-separated list of webhook URLs. Each becomes a `WebhookSink`. |
-| `OPENLOOM_NOTIFY_WEBHOOK_EVENTS` | *(all)* | Optional comma- or space-separated list of event names to forward. Default forwards every event. |
-| `OPENLOOM_NOTIFY_FILE_DIRS` | *(unset)* | Comma- or space-separated list of directory paths. Each becomes a `FileSink`. |
-| `OPENLOOM_NOTIFY_FILE_PREFIX` | `openloom` | Filename prefix for file-sink outputs. |
-| `OPENLOOM_NOTIFY_RECENT_MESSAGES` | `3` | How many of the latest assistant messages to include in `data.recent_activity` on task and session events. Each entry is truncated (1 000 chars of text, 80 chars of tool input) so the webhook stays well under 40 KB even for verbose agents. |
+| `OPENLOOM_NOTIFY_WEBHOOK_EVENTS` | `*` | Optional comma- or space-separated list of event names to forward. Default forwards every event. |
+| `OPENLOOM_NOTIFY_RECENT_MESSAGES` | `3` | How many of the latest assistant messages to include in `data.recent_activity` on every event. Each entry is truncated (1 000 chars of text, 80 chars of tool input) so the webhook stays well under 40 KB even for verbose agents. |
 
-Example: forward only task lifecycle and stale-busy events to Slack, full stream to disk:
+Payload schema and event types: [notifications.md](notifications.md).
 
-```bash
-export OPENLOOM_NOTIFY_WEBHOOK_URLS='https://hooks.slack.com/services/...'
-export OPENLOOM_NOTIFY_WEBHOOK_EVENTS='TASK_COMPLETED,TASK_FAILED,SESSION_STALE_BUSY'
+## Removed in 0.12
 
-export OPENLOOM_NOTIFY_FILE_DIRS=/var/log/openloom
-```
+The following env vars are gone in 0.12 and will be silently ignored if set:
 
-See [notifications.md](notifications.md) for payload schema, retry behaviour, and the list of event types.
+| Removed var | Reason |
+|-------------|--------|
+| `OPENLOOM_INBOX_DIR` | File-inbox dispatch removed. The dashboard no longer reads a directory. |
+| `OPENLOOM_INBOX_FILENAME` | Same. |
+| `OPENLOOM_INBOX_POLL_SECONDS` | Same. |
+| `OPENLOOM_INBOX_DEFAULT_WORKSPACE` | Same. |
+| `OPENLOOM_INBOX_DEFAULT_SESSION` | Same. |
+| `OPENLOOM_STALE_BUSY_CHECKS` | Stale-busy detection removed. The dashboard no longer shows a "stuck" pill. |
+| `OPENLOOM_NOTIFY_FILE_DIRS` | File notification sink removed. Webhook is the only delivery path. |
+| `OPENLOOM_NOTIFY_FILE_PREFIX` | Same. |
+| `OPENLOOM_NOTIFY_FILE_EVENTS` | Same. |
 
-## Stale-busy detection
-
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `OPENLOOM_STALE_BUSY_CHECKS` | `10` | Number of consecutive monitor refreshes (≈ refresh interval, default 8 s) during which a session has been busy with no new completed message before `SESSION_STALE_BUSY` is emitted. |
-
-The probe path runs for every busy session on every refresh, so a long-running tool that *is* making progress (e.g. `npm install` advancing the `completed` timestamp of an assistant message every few seconds) will not be treated as stuck — the counter resets whenever fresh progress is observed.
-
-## CLI flags
-
-OpenLoom's CLI subcommands also accept flags. See the on-disk help:
-
-```bash
-openloom init --help
-openloom watch --help
-openloom serve --help
-```
-
-Notable flags:
-
-| Command | Flag | Purpose |
-|---------|------|---------|
-| `watch` | `--ui` | Run the same harness with a local web UI (requires `[ui]`). |
-| `watch` | `--verbose` | Set log level to `DEBUG` for the harness and the OpenCode client. |
-| `serve` | `--host` | Override `OPENLOOM_UI_HOST`. |
-| `serve` | `--port` | Override `OPENLOOM_UI_PORT`. |
-| `init` | `--path` | Custom path for the generated `openloom.yaml`. |
+If you are migrating from 0.11, drop these from your deployment scripts.

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
 
 
@@ -23,20 +22,12 @@ class WebhookEntry:
 
 
 @dataclass(frozen=True)
-class FileEntry:
-    directory: Path
-    events: frozenset[str] = field(default_factory=frozenset)
-    prefix: str = "openloom"
-
-
-@dataclass(frozen=True)
 class NotifyConfig:
     webhooks: list[WebhookEntry] = field(default_factory=list)
-    files: list[FileEntry] = field(default_factory=list)
 
     @property
     def enabled(self) -> bool:
-        return bool(self.webhooks or self.files)
+        return bool(self.webhooks)
 
     @classmethod
     def empty(cls) -> NotifyConfig:
@@ -63,23 +54,7 @@ class NotifyConfig:
                 headers={str(k): str(v) for k, v in (entry.get("headers") or {}).items()},
             ))
 
-        files: list[FileEntry] = []
-        for entry in raw.get("file", []) or []:
-            if not isinstance(entry, dict):
-                raise ValueError("notify.file entries must be mappings")
-            dir_raw = entry.get("dir") or entry.get("directory")
-            if not dir_raw:
-                raise ValueError("notify.file entry missing 'dir'")
-            directory = Path(str(dir_raw)).expanduser()
-            if not directory.is_absolute():
-                directory = Path.cwd() / directory
-            files.append(FileEntry(
-                directory=directory,
-                events=_coerce_event_filter(entry.get("events")),
-                prefix=str(entry.get("prefix", "openloom")),
-            ))
-
-        return cls(webhooks=webhooks, files=files)
+        return cls(webhooks=webhooks)
 
     @classmethod
     def from_env(cls) -> NotifyConfig:
@@ -94,20 +69,7 @@ class NotifyConfig:
                 ),
             ))
 
-        files: list[FileEntry] = []
-        dirs = _split_env(os.getenv("OPENLOOM_NOTIFY_FILE_DIRS", ""))
-        for d in dirs:
-            directory = Path(d).expanduser()
-            if not directory.is_absolute():
-                directory = Path.cwd() / directory
-            files.append(FileEntry(
-                directory=directory,
-                events=_coerce_event_filter(
-                    os.getenv("OPENLOOM_NOTIFY_FILE_EVENTS", "*"),
-                ),
-            ))
-
-        return cls(webhooks=webhooks, files=files)
+        return cls(webhooks=webhooks)
 
 
 def _split_env(raw: str) -> list[str]:

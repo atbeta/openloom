@@ -5,7 +5,6 @@
 
   let state = $state({
     server: { ok: false, url: '', message: 'loading' },
-    staleBusy: { thresholdChecks: 10, sessionIds: [] },
     recentWorkspaces: [],
     tasks: [],
     sessions: [],
@@ -13,8 +12,7 @@
     archivedSessions: [],
     sessionStatus: {},
     permissions: [],
-    inbox: { enabled: false },
-    notify: { webhooks: [], files: [] },
+    notify: { webhooks: [] },
     metrics: { running: 0, waiting: 0, failed: 0, completedToday: 0, sessionsBusy: 0, sessionsIdle: 0, sessionsRetry: 0 },
     usage: {
       periods: {
@@ -173,22 +171,6 @@
   const activeTasks = $derived((state.tasks || []).filter((task) => task.status !== 'archived'));
   const archivedTasks = $derived((state.tasks || []).filter((task) => task.status === 'archived'));
 
-  const inboxSummary = $derived.by(() => {
-    const ib = state.inbox;
-    if (!ib || !ib.enabled) {
-      return { enabled: false, label: 'Off', detail: 'OPENLOOM_INBOX_DIR not set' };
-    }
-    const dir = ib.directory || '?';
-    const poll = ib.pollIntervalSeconds != null ? `${Math.round(ib.pollIntervalSeconds)}s poll` : '';
-    const file = ib.filename ? `${ib.filename}` : '';
-    const session = ib.defaultSession ? `session:${ib.defaultSession.slice(0, 12)}` : '';
-    return {
-      enabled: true,
-      label: 'Watching',
-      detail: `${dir} · ${file}${poll ? ` · ${poll}` : ''}${session ? ` · ${session}` : ''}`,
-    };
-  });
-
   const webhookSummary = $derived.by(() => {
     const list = state.notify?.webhooks || [];
     if (list.length === 0) {
@@ -199,19 +181,6 @@
       enabled: true,
       label: `${list.length} webhook${list.length === 1 ? '' : 's'}`,
       detail: wh.url,
-    };
-  });
-
-  const fileNotifySummary = $derived.by(() => {
-    const list = state.notify?.files || [];
-    if (list.length === 0) {
-      return { enabled: false, label: 'Off', detail: 'no file sink configured' };
-    }
-    const fe = list[0];
-    return {
-      enabled: true,
-      label: `${list.length} file sink${list.length === 1 ? '' : 's'}`,
-      detail: `${fe.directory} · ${fe.prefix}-*`,
     };
   });
 
@@ -1236,14 +1205,6 @@
         <span class={`pill ${state.server.ok ? 'pill-ok' : 'pill-fail'}`}>
           <span class="pill-dot"></span>{state.server.ok ? 'Healthy' : 'Unavailable'}
         </span>
-        {#if state.staleBusy?.sessionIds?.length}
-          <span
-            class="pill pill-warn"
-            title={`Stuck for >{state.staleBusy.thresholdChecks} checks: ${state.staleBusy.sessionIds.join(', ')}`}
-          >
-            <span class="pill-dot"></span>{state.staleBusy.sessionIds.length} stuck
-          </span>
-        {/if}
       </div>
       <div class="main-tabs">
         <button type="button" class="main-tab" class:active={mainView === 'dashboard'} onclick={() => (mainView = 'dashboard')}>Dashboard</button>
@@ -1481,26 +1442,12 @@
       {:else if state.tasks.length === 0 && state.sessions.length === 0}
         <div class="empty">No sessions or tasks yet. Use New Task in the Actions panel.</div>
       {:else}
-        <div class="config-summary" role="group" aria-label="Active input and notification channels">
-          <div class="config-summary-item" class:config-summary-off={!inboxSummary.enabled}>
-            <span class="config-summary-icon" class:config-summary-icon-on={inboxSummary.enabled}><Icon name="inbox" size={14} /></span>
-            <div class="config-summary-text">
-              <span class="config-summary-label">Inbox <span class="config-summary-status">{inboxSummary.enabled ? 'on' : 'off'}</span></span>
-              <span class="config-summary-detail">{inboxSummary.detail}</span>
-            </div>
-          </div>
+        <div class="config-summary" role="group" aria-label="Notification channels">
           <div class="config-summary-item" class:config-summary-off={!webhookSummary.enabled}>
             <span class="config-summary-icon" class:config-summary-icon-on={webhookSummary.enabled}><Icon name="webhook" size={14} /></span>
             <div class="config-summary-text">
               <span class="config-summary-label">Webhook <span class="config-summary-status">{webhookSummary.enabled ? 'on' : 'off'}</span></span>
               <span class="config-summary-detail">{webhookSummary.detail}</span>
-            </div>
-          </div>
-          <div class="config-summary-item" class:config-summary-off={!fileNotifySummary.enabled}>
-            <span class="config-summary-icon" class:config-summary-icon-on={fileNotifySummary.enabled}><Icon name="file-text" size={14} /></span>
-            <div class="config-summary-text">
-              <span class="config-summary-label">File notify <span class="config-summary-status">{fileNotifySummary.enabled ? 'on' : 'off'}</span></span>
-              <span class="config-summary-detail">{fileNotifySummary.detail}</span>
             </div>
           </div>
         </div>
