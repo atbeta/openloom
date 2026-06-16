@@ -12,7 +12,7 @@ session poller: it ticks every CHECK_INTERVAL_SECONDS, asks
 OpenCode for the task's session status + the last few
 messages, and emits one TASK_UPDATED event with the result.
 
-Webhooks that want a finer-grained "the agent just finished"
+Webhook handlers that want a finer-grained "the agent just finished"
 signal can call ``runtime.prompts.detect_progress`` on the
 last assistant text themselves; the harness does not do that
 on their behalf any more.
@@ -22,7 +22,6 @@ from __future__ import annotations
 import logging
 import time
 import uuid
-from collections.abc import Callable
 from typing import Any
 
 from .events import Event, EventBus, EventType
@@ -36,7 +35,7 @@ from .store import new_task_record
 
 _logger = logging.getLogger("openloom.harness")
 
-# Hardcoded — 0.12 dropped the env-var knob. 8s is a reasonable
+# Hardcoded — 0.12 dropped the env-var knob. 8 s is a reasonable
 # trade-off between UI freshness and OpenCode server load.
 CHECK_INTERVAL_SECONDS = 8
 
@@ -62,26 +61,6 @@ class HarnessRunner:
         self.max_task_tokens = max_task_tokens
         self.max_task_runtime_minutes = max_task_runtime_minutes
         self.notify_recent_messages = max(1, int(notify_recent_messages))
-        # Per-session-drops callback chain. Reserved for future
-        # extensions (e.g. server-side admin actions that need to
-        # invalidate monitor state) — no caller wired today, but
-        # the seam stays so the test suite can verify the contract.
-        self._session_dropped_handlers: list[Callable[[str], None]] = []
-
-    def on_session_dropped(self, handler: Callable[[str], None]) -> None:
-        self._session_dropped_handlers.append(handler)
-
-    def _notify_session_dropped(self, session_id: str) -> None:
-        if not session_id:
-            return
-        for handler in self._session_dropped_handlers:
-            try:
-                handler(session_id)
-            except Exception:  # noqa: BLE001
-                _logger.exception(
-                    "session-dropped handler %r failed for %s",
-                    handler, session_id,
-                )
 
     def _task_name(self, task_id: str) -> str:
         task = self.store.get_task(task_id)
@@ -109,7 +88,6 @@ class HarnessRunner:
             name=spec.name,
             spec=spec.to_dict(),
             workspace=spec.workspace,
-            check_interval_seconds=CHECK_INTERVAL_SECONDS,
             active_session_id=active_session_id,
         )
         result = self.store.create_task(task)
@@ -131,13 +109,11 @@ class HarnessRunner:
         if not task:
             raise LookupError("Task not found")
         name = str(task.get("name") or "")
-        session_id = str(task.get("active_session_id") or "")
         sv = self.store.update_task(task_id, status="paused", next_check_at=None)
         self.bus.emit(Event(
             type=EventType.TASK_UPDATED, task_id=task_id, store_version=sv,
             task_name=name, data={"status": "paused"},
         ))
-        self._notify_session_dropped(session_id)
         return {"ok": True, "taskId": task_id, "status": "paused", "store_version": sv}
 
     def resume_task(self, task_id: str) -> dict[str, Any]:
@@ -166,15 +142,13 @@ class HarnessRunner:
         if not task:
             raise LookupError("Task not found")
         name = str(task.get("name") or "")
-        session_id = str(task.get("active_session_id") or "")
         sv = self.store.update_task(
-            task_id,
-            status="completed",
-            next_check_at=None,
-            last_summary=summary,
-            progress=1.0,
+            task_id, status="completed", next_check_at=None,
+            last_summary=summary, progress=1.0,
         )
-        self.store.append_check_log(task_id, status="completed", summary=summary)
+        self.store.append_check_log(
+            task_id, status="completed", summary=summary,
+        )
         self.bus.emit(Event(
             type=EventType.TASK_UPDATED, task_id=task_id, store_version=sv,
             task_name=name,
@@ -185,7 +159,6 @@ class HarnessRunner:
             task_name=name,
             data={"summary": summary, "progress": 1.0},
         ))
-        self._notify_session_dropped(session_id)
         return {"ok": True, "taskId": task_id, "status": "completed", "store_version": sv}
 
     def archive_task(
@@ -198,11 +171,8 @@ class HarnessRunner:
         if not task:
             raise LookupError("Task not found")
         name = str(task.get("name") or "")
-        session_id = str(task.get("active_session_id") or "")
         sv = self.store.update_task(
-            task_id,
-            status="archived",
-            next_check_at=None,
+            task_id, status="archived", next_check_at=None,
             last_summary=summary,
         )
         self.store.append_check_log(task_id, status="archived", summary=summary)
@@ -210,7 +180,6 @@ class HarnessRunner:
             type=EventType.TASK_UPDATED, task_id=task_id, store_version=sv,
             task_name=name, data={"status": "archived", "summary": summary},
         ))
-        self._notify_session_dropped(session_id)
         return {"ok": True, "taskId": task_id, "status": "archived", "store_version": sv}
 
     def delete_task(self, task_id: str) -> dict[str, Any]:
@@ -260,8 +229,6 @@ class HarnessRunner:
 
     async def _check_task(self, task: dict[str, Any]) -> None:
         task_id = task["id"]
-        spec_data = task["spec"]
-        self.prompts.TaskSpec.from_dict(spec_data)  # smoke-check spec shape
         now = time.time()
 
         if task["status"] == "pending":
@@ -273,9 +240,7 @@ class HarnessRunner:
 
         session_id = str(task.get("active_session_id") or "")
         if not session_id:
-            # Without a session there is nothing to poll; the task
-            # should never have reached this state (pending would
-            # have routed to _start_task), but be defensive.
+            # Defensive: pending should have routed to _start_task.
             return
 
         # Pull a snapshot of the session for the event payload.
@@ -301,26 +266,19 @@ class HarnessRunner:
         recent_activity = self.prompts.recent_assistant_activity(
             messages, n=self.notify_recent_messages,
         )
-        progress = self.opencode.resolve_session_permissions_progress(
-            session_id, is_busy,
-        ) if hasattr(self.opencode, "resolve_session_permissions_progress") else (
-            0.0 if is_busy else 0.5
-        )
 
         # Decide status:
-        #   * pending session status (could not reach OpenCode) → keep current
         #   * permission_waiting → "waiting"
         #   * busy → "running" (agent in flight)
         #   * idle + assistant says TASK COMPLETE → "completed"
         #   * idle + nothing → still "running" (webhook can decide)
         permission = None
-        if hasattr(self.opencode, "resolve_session_permissions"):
-            try:
-                permission = await self.opencode.resolve_session_permissions(
-                    session_id, auto_accept=False,
-                )
-            except Exception:
-                permission = None
+        try:
+            permission = await self.opencode.resolve_session_permissions(
+                session_id,
+            )
+        except Exception:
+            permission = None
 
         if permission is not None:
             status = permission["status"]
@@ -336,7 +294,15 @@ class HarnessRunner:
             # assistant turn. If present, mark the task completed;
             # otherwise leave it as "running" so the dashboard
             # shows the user that the agent is sitting idle.
-            last_text = _last_assistant_text(messages)
+            from openloom.runtime.prompts import (
+                extract_assistant_text,
+                message_role,
+            )
+            last_text = ""
+            for message in reversed(messages):
+                if message_role(message) == "assistant":
+                    last_text = extract_assistant_text(message)
+                    break
             if "TASK COMPLETE" in last_text.upper():
                 status = "completed"
                 summary = "Agent reported TASK COMPLETE"
@@ -344,11 +310,7 @@ class HarnessRunner:
                 status = "running"
                 summary = "Session idle — awaiting input"
 
-        # Bump progress on completion.
-        if status == "completed":
-            step_progress = 1.0
-        else:
-            step_progress = progress
+        progress = 1.0 if status == "completed" else 0.0
 
         next_check = (
             None
@@ -358,7 +320,7 @@ class HarnessRunner:
         sv = self.store.update_task(
             task_id,
             status=status,
-            progress=step_progress,
+            progress=progress,
             last_check_at=now,
             next_check_at=next_check,
             last_summary=summary,
@@ -369,7 +331,7 @@ class HarnessRunner:
 
         emit_data: dict[str, Any] = {
             "status": status,
-            "progress": step_progress,
+            "progress": progress,
             "summary": summary,
             "recent_activity": recent_activity,
             "active_session_id": session_id,
@@ -384,7 +346,7 @@ class HarnessRunner:
             self.bus.emit(Event(
                 type=EventType.TASK_COMPLETED, task_id=task_id, store_version=sv,
                 task_name=str(task.get("name") or ""),
-                data={**emit_data, "summary": summary, "progress": step_progress},
+                data={**emit_data, "summary": summary, "progress": progress},
             ))
 
     async def _start_task(self, task: dict[str, Any]) -> None:
@@ -431,7 +393,6 @@ class HarnessRunner:
             active_session_id=session_id,
             session_ids=[session_id],
             spec=spec.to_dict(),
-            check_interval_seconds=CHECK_INTERVAL_SECONDS,
             last_check_at=now,
             next_check_at=now + CHECK_INTERVAL_SECONDS,
             error=None,
@@ -444,12 +405,3 @@ class HarnessRunner:
             task_name=str(task.get("name") or ""),
             data={"session_id": session_id, "summary": summary},
         ))
-
-
-def _last_assistant_text(messages: list[dict[str, Any]]) -> str:
-    from openloom.runtime.prompts import extract_assistant_text, message_role
-
-    for message in reversed(messages):
-        if message_role(message) == "assistant":
-            return extract_assistant_text(message)
-    return ""

@@ -27,18 +27,19 @@ def _walk(rel: str) -> list[Path]:
     return [p for p in root.rglob("*.py") if p.is_file()]
 
 
+# The set of core/ modules that must not import from levels/ or
+# server/. The list is the source of truth — `test_architecture.py`
+# would otherwise drift when modules are added or removed.
 @pytest.mark.parametrize(
     "module",
     [
         "openloom.core",
-        "openloom.core.checker",
         "openloom.core.events",
         "openloom.core.harness",
         "openloom.core.notify_config",
         "openloom.core.protocols",
         "openloom.core.registry",
         "openloom.core.sink",
-        "openloom.core.source",
         "openloom.core.store",
     ],
 )
@@ -50,10 +51,6 @@ def test_core_does_not_import_levels_or_server(module: str) -> None:
 
     forbidden = {
         "openloom.levels",
-        "openloom.levels.manual",
-        "openloom.levels.config",
-        "openloom.levels.openspec",
-        "openloom.levels.ui",
         "openloom.levels.server",
         "openloom.server",
     }
@@ -87,14 +84,6 @@ def test_harness_does_not_directly_call_sink() -> None:
     assert ".on_event(" not in text, "harness must not invoke sink.on_event directly"
 
 
-def test_manual_watch_does_not_pull_web_or_server() -> None:
-    """watch (level/manual) must not pull web/server deps — server assembly is in cli."""
-    text = _read(SRC / "levels" / "manual" / "watch.py")
-    assert "uvicorn" not in text
-    assert "fastapi" not in text
-    assert "openloom.server" not in text
-
-
 def test_server_does_not_import_levels() -> None:
     """Server/ must be level-agnostic — it consumes core/ + runtime/ only."""
     for p in _walk("server"):
@@ -102,11 +91,3 @@ def test_server_does_not_import_levels() -> None:
         assert "openloom.levels" not in text, (
             f"{p.relative_to(SRC)} imports openloom.levels"
         )
-
-
-def test_watch_does_not_import_uvicorn_or_fastapi() -> None:
-    """watch (level/manual) must not pull web deps — server assembly moved to cli."""
-    text = _read(SRC / "levels" / "manual" / "watch.py")
-    assert "uvicorn" not in text
-    assert "fastapi" not in text
-    assert "openloom.server" not in text

@@ -561,50 +561,6 @@ tr.clickable {
   margin-bottom: 0;
 }
 
-.dispatch-interval .interval-presets {
-  background: transparent;
-  border: none;
-  padding: 0;
-  gap: 6px;
-}
-
-.dispatch-interval .interval-preset {
-  border-radius: var(--radius-sm);
-  border: 1px solid var(--border-soft);
-  background: var(--bg);
-}
-
-.dispatch-interval .interval-preset.active {
-  background: var(--accent-subtle);
-  border-color: var(--accent-ring);
-}
-
-.plan-step-list {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.plan-step-card {
-  padding: 10px 12px;
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius-md);
-  background: var(--bg);
-}
-
-.plan-step-acceptance {
-  margin-top: 8px;
-  padding-left: 28px;
-}
-
-.plan-step-label {
-  font-size: 12px;
-}
-
-.plan-hint {
-  margin-top: 2px;
-  font-size: 12px;
-}
 
 /* Task composer (New Task panel) */
 .task-composer {
@@ -616,36 +572,31 @@ tr.clickable {
   box-shadow: none;
 }
 
-.composer-section {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 14px 18px 16px;
-  border-top: 1px solid var(--border-soft);
-}
-.composer-section:first-child {
-  border-top: 0;
-  padding-top: 8px;
-}
-
-.composer-section-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-}
-
-.composer-label {
-  font-size: 10px;
-  font-weight: 560;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--meta);
-  font-family: var(--font-mono);
-}
-
 .composer-target-tabs {
   width: 100%;
+  margin-bottom: 12px;
+}
+
+.composer-name {
+  width: 100%;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--border-soft);
+  border-radius: 0;
+  padding: 6px 0 8px;
+  color: var(--fg);
+  font-size: 13px;
+  transition: border-color 0.15s ease;
+}
+.composer-name:hover {
+  border-bottom-color: var(--border);
+}
+.composer-name:focus {
+  outline: none;
+  border-bottom-color: var(--accent);
+}
+.composer-name::placeholder {
+  color: var(--meta);
 }
 
 .composer-path {
@@ -674,19 +625,6 @@ tr.clickable {
   border-bottom-color: var(--accent);
 }
 
-.composer-recents {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.template-chip.active {
-  color: var(--fg);
-}
-.template-chip.active::before {
-  color: var(--accent);
-}
-
 .composer-session-fields {
   display: flex;
   flex-direction: column;
@@ -703,35 +641,6 @@ tr.clickable {
   font-size: 12.5px;
 }
 
-.composer-divider {
-  display: none;
-}
-
-.composer-title {
-  width: 100%;
-  background: transparent;
-  border: 0;
-  border-bottom: 1px solid var(--border-soft);
-  border-radius: 0;
-  padding: 6px 0 8px;
-  color: var(--fg);
-  font-size: 14px;
-  font-weight: 560;
-  letter-spacing: -0.005em;
-  transition: border-color 0.15s ease, color 0.15s ease;
-}
-.composer-title:hover {
-  border-bottom-color: var(--border);
-}
-.composer-title:focus {
-  outline: none;
-  border-bottom-color: var(--accent);
-}
-
-.composer-title::placeholder {
-  color: var(--meta);
-  font-weight: 400;
-}
 
 .composer-goal {
   width: 100%;
@@ -760,388 +669,6 @@ tr.clickable {
   color: var(--meta);
 }
 
-.composer-steps-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 6px;
-}
-
-.composer-add {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  text-transform: lowercase;
-  letter-spacing: 0.02em;
-  color: var(--muted);
-  padding: 2px 4px;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  transition: color 0.12s ease;
-}
-.composer-add:hover {
-  color: var(--fg-2);
-  background: transparent;
-  border: 0;
-}
-
-.task-step-list {
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-}
-
-.task-step {
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  overflow: visible;
-  transition: none;
-  border-top: 1px dashed var(--border-soft);
-}
-.task-step:first-child {
-  border-top: 0;
-}
-
-.task-step.expanded {
-  border-color: var(--border-soft);
-}
-
-.task-step-main {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto auto;
-  align-items: center;
-  gap: 8px;
-  padding: 7px 0;
-}
-
-.task-step-num {
-  display: inline-block;
-  min-width: 22px;
-  color: var(--meta);
-  font-size: 10.5px;
-  font-weight: 500;
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
-  letter-spacing: -0.02em;
-  padding: 0;
-  background: transparent;
-  border-radius: 0;
-  height: auto;
-  text-align: left;
-  user-select: none;
-}
-
-.task-step-main input {
-  width: 100%;
-  min-width: 0;
-  border: 0;
-  background: transparent;
-  padding: 2px 0;
-  color: var(--fg);
-  font-size: 12.5px;
-  line-height: 1.4;
-}
-
-.task-step-main input::placeholder {
-  color: var(--meta);
-}
-
-.task-step-main input:focus {
-  outline: none;
-}
-
-.task-step-checks-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: var(--muted);
-  font-size: 10.5px;
-  font-family: var(--font-mono);
-  padding: 2px 0;
-  cursor: pointer;
-  white-space: nowrap;
-  transition: color 0.12s ease;
-}
-
-.task-step-checks-btn:hover,
-.task-step-checks-btn.active {
-  color: var(--fg-2);
-  background: transparent;
-  border: 0;
-}
-
-.task-step-chevron {
-  transition: transform 0.18s ease;
-}
-
-.task-step-chevron.open {
-  transform: rotate(180deg);
-}
-
-.task-step-checks {
-  padding: 2px 0 8px 30px;
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-  border-top: 0;
-  background: transparent;
-}
-
-.task-check-row {
-  display: grid;
-  grid-template-columns: 14px minmax(0, 1fr) 24px;
-  align-items: center;
-  gap: 6px;
-}
-
-.task-check-icon {
-  color: var(--meta);
-}
-
-.task-check-row input {
-  width: 100%;
-  min-width: 0;
-  border: 0;
-  background: transparent;
-  padding: 4px 0;
-  color: var(--fg-2);
-  font-size: 12.5px;
-  line-height: 1.4;
-}
-.task-check-row input::placeholder {
-  color: var(--meta);
-}
-
-.task-check-row input:focus {
-  outline: none;
-}
-
-.task-check-add {
-  align-self: flex-start;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  margin-top: 4px;
-  padding-left: 30px;
-  font-family: var(--font-mono);
-  font-size: 10.5px;
-  color: var(--muted);
-  text-transform: lowercase;
-  letter-spacing: 0.02em;
-}
-.task-check-add::before {
-  content: '+';
-  color: var(--accent);
-  margin-right: 2px;
-}
-
-.task-global-checks {
-  margin-top: 4px;
-  border: 0;
-  border-top: 1px dashed var(--border-soft);
-  border-radius: 0;
-  background: transparent;
-  padding-top: 8px;
-}
-
-.task-global-checks summary {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0;
-  font-size: 10px;
-  font-weight: 560;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--meta);
-  font-family: var(--font-mono);
-  cursor: pointer;
-  list-style: none;
-  user-select: none;
-}
-
-.task-global-checks summary::-webkit-details-marker {
-  display: none;
-}
-
-.task-global-checks summary::before {
-  content: '▸';
-  color: var(--muted);
-  font-size: 9px;
-  transition: transform 0.18s ease;
-  display: inline-block;
-}
-
-.task-global-checks[open] summary::before {
-  transform: rotate(90deg);
-}
-
-.composer-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 14px;
-  height: 14px;
-  padding: 0 4px;
-  border-radius: 0;
-  background: transparent;
-  color: var(--accent);
-  font-size: 9.5px;
-  font-family: var(--font-mono);
-  font-variant-numeric: tabular-nums;
-}
-
-.task-global-body {
-  padding: 8px 0 0 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 0;
-}
-
-.composer-foot-interval {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-
-.composer-auto-accept {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0;
-}
-
-.composer-auto-accept-toggle {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  user-select: none;
-  min-width: 0;
-  flex: 1;
-}
-
-.composer-auto-accept-input {
-  position: absolute;
-  opacity: 0;
-  width: 1px;
-  height: 1px;
-  margin: 0;
-  pointer-events: none;
-}
-
-.composer-auto-accept-box {
-  width: 14px;
-  height: 14px;
-  border: 1px solid var(--border);
-  border-radius: 2px;
-  background: transparent;
-  flex-shrink: 0;
-  display: grid;
-  place-items: center;
-  transition:
-    border-color 0.15s ease,
-    background 0.15s ease;
-}
-
-.composer-auto-accept-check {
-  color: var(--accent-on);
-  display: block;
-  margin-top: 1px;
-}
-
-.composer-auto-accept-toggle:has(.composer-auto-accept-input:checked) .composer-auto-accept-box {
-  background: var(--accent);
-  border-color: var(--accent);
-}
-
-.composer-auto-accept-toggle:hover .composer-auto-accept-box {
-  border-color: var(--accent-ring);
-}
-
-.composer-auto-accept-toggle:has(.composer-auto-accept-input:focus-visible) .composer-auto-accept-box {
-  outline: 2px solid var(--accent-ring);
-  outline-offset: 2px;
-}
-
-.composer-auto-accept-title {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--fg-2);
-  line-height: 1.2;
-}
-
-.composer-help {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 15px;
-  height: 15px;
-  padding: 0;
-  border-radius: 50%;
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--muted);
-  font-size: 10px;
-  font-weight: 600;
-  line-height: 1;
-  cursor: help;
-  flex-shrink: 0;
-  transition: border-color 0.15s ease, color 0.15s ease;
-}
-
-.composer-help:hover,
-.composer-help:focus-visible {
-  border-color: var(--accent-ring);
-  color: var(--fg-2);
-  outline: none;
-}
-
-.composer-help-tip {
-  position: absolute;
-  bottom: calc(100% + 8px);
-  right: 0;
-  width: min(240px, 52vw);
-  padding: 8px 10px;
-  border-radius: var(--radius-md);
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--fg-2);
-  font-size: 11px;
-  font-weight: 400;
-  line-height: 1.45;
-  text-align: left;
-  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.38);
-  opacity: 0;
-  visibility: hidden;
-  pointer-events: none;
-  transition: opacity 0.15s ease, visibility 0.15s ease;
-  z-index: 30;
-}
-
-.composer-help-tip::after {
-  content: "";
-  position: absolute;
-  top: 100%;
-  right: 5px;
-  border: 6px solid transparent;
-  border-top-color: var(--border);
-}
-
-.composer-help:hover .composer-help-tip,
-.composer-help:focus-visible .composer-help-tip {
-  opacity: 1;
-  visibility: visible;
-}
 
 .permission-banner {
   margin: 0 20px 8px;

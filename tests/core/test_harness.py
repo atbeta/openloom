@@ -32,14 +32,12 @@ def test_new_task_record_defaults() -> None:
         name="Demo",
         spec={"name": "Demo"},
         workspace="/tmp/ws",
-        check_interval_seconds=300,
         active_session_id="sess_1",
     )
     assert task["status"] == "pending"
-    assert task["current_step"] == 0
     assert task["session_ids"] == ["sess_1"]
     assert task["active_session_id"] == "sess_1"
-    assert task["next_check_at"] is not None
+    assert task["progress"] == 0.0
 
 
 def test_manual_complete_emits_updated_and_completed(tmp_path: Path) -> None:

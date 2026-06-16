@@ -1,56 +1,39 @@
+"""
+Plugin registry for notify sinks.
+
+The 0.12 harness does not need a checker / source / plan
+registry (those existed for the manual-mode runtime). The only
+plugin surface that survives is the sink registry: every
+``register_sink("name")`` call adds a class to the
+``_sinks`` map, and ``get_sink("name")`` returns it for
+harness wiring.
+"""
+
 from __future__ import annotations
 
-from typing import Any
-
-from .checker import Checker
 from .sink import Sink
-from .source import TaskSource
 
-_sources: dict[str, type[TaskSource]] = {}
-_checkers: dict[str, type[Checker]] = {}
 _sinks: dict[str, type[Sink]] = {}
 
 
-def _register(map_: dict[str, type], name: str):
-    def decorator(cls):
-        map_[name] = cls
-        return cls
-    return decorator
-
-
-def register_source(name: str):
-    return _register(_sources, name)
-
-
-def register_checker(name: str):
-    return _register(_checkers, name)
-
-
 def register_sink(name: str):
-    return _register(_sinks, name)
+    """Decorator: ``@register_sink("web") class WebSink(Sink): ...``.
 
+    The decorator pattern keeps the import side-effect local to
+    the sink module — the harness factory calls ``get_sink("web")``
+    to look up the class without having to know its symbol.
+    """
 
-def get_source(name: str) -> type[TaskSource]:
-    if name not in _sources:
-        raise KeyError(f"Unknown source: {name}. Available: {list(_sources)}")
-    return _sources[name]
+    def decorator(cls: type[Sink]) -> type[Sink]:
+        _sinks[name] = cls
+        return cls
 
-
-def get_checker(name: str) -> type[Checker]:
-    if name not in _checkers:
-        raise KeyError(f"Unknown checker: {name}. Available: {list(_checkers)}")
-    return _checkers[name]
+    return decorator
 
 
 def get_sink(name: str) -> type[Sink]:
     if name not in _sinks:
-        raise KeyError(f"Unknown sink: {name}. Available: {list(_sinks)}")
+        raise KeyError(
+            f"Unknown sink: {name}. Available: {sorted(_sinks)}",
+        )
     return _sinks[name]
-
-
-def list_all() -> dict[str, dict[str, Any]]:
-    return {
-        "sources": {n: {"module": c.__module__} for n, c in _sources.items()},
-        "checkers": {n: {"module": c.__module__} for n, c in _checkers.items()},
-        "sinks": {n: {"module": c.__module__} for n, c in _sinks.items()},
-    }

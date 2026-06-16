@@ -606,43 +606,25 @@ class OpenCodeClient:
             )
             return True
 
-    async def approve_pending_permissions(
-        self,
-        session_id: str,
-        *,
-        response: str = "once",
-        directory: str | None = None,
-    ) -> int:
-        pending = await self.list_pending_permissions(session_id, directory=directory)
-        count = 0
-        for perm in pending:
-            perm_id = perm.get("id")
-            sid = perm.get("sessionId") or session_id
-            if not perm_id or not sid:
-                continue
-            try:
-                await self.respond_permission(sid, str(perm_id), response, directory=directory)
-                count += 1
-            except Exception:
-                continue
-        return count
-
     async def resolve_session_permissions(
-        self,
-        session_id: str,
-        auto_accept: bool,
+        self, session_id: str,
     ) -> dict[str, str] | None:
+        """Return a {"status", "summary"} describing what should
+        happen for the task in the next dashboard tick, or None
+        if there are no pending permissions for this session.
+
+        0.12 dropped the auto-accept path; the harness is now a
+        read-only consumer of pending permissions. Webhook
+        handlers that want to auto-accept can call
+        ``client.respond_permission`` directly.
+        """
         pending = await self.list_pending_permissions(session_id)
         if not pending:
             return None
-        if auto_accept:
-            approved = await self.approve_pending_permissions(session_id, response="once")
-            if approved > 0:
-                return {
-                    "status": "running",
-                    "summary": f"Auto-approved {approved} permission request(s)",
-                }
-        return {"status": "waiting", "summary": permission_waiting_summary(pending)}
+        return {
+            "status": "waiting",
+            "summary": permission_waiting_summary(pending),
+        }
 
     async def diff(self, session_id: str) -> list[dict[str, Any]]:
         data = await self._request_json("GET", f"/session/{session_id}/diff")
