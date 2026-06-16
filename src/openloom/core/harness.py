@@ -290,15 +290,9 @@ class HarnessRunner:
             # assistant turn. If present, mark the task completed;
             # otherwise leave it as "running" so the dashboard
             # shows the user that the agent is sitting idle.
-            from openloom.runtime.prompts import (
-                extract_assistant_text,
-                message_role,
+            last_text = (
+                recent_activity[0]["text"] if recent_activity else ""
             )
-            last_text = ""
-            for message in reversed(messages):
-                if message_role(message) == "assistant":
-                    last_text = extract_assistant_text(message)
-                    break
             if "TASK COMPLETE" in last_text.upper():
                 status = "completed"
                 summary = "Agent reported TASK COMPLETE"

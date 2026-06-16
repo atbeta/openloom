@@ -85,12 +85,7 @@ type = "forbidden"
 source_modules = ["openloom.core"]
 forbidden_modules = [
   "openloom.levels",
-  "openloom.levels.manual",
-  "openloom.levels.config",
-  "openloom.levels.inbox",
   "openloom.levels.notify",
-  "openloom.levels.openspec",
-  "openloom.levels.ui",
   "openloom.levels.server",
   "openloom.runtime",
   "openloom.server",
@@ -101,12 +96,7 @@ message = "core/ must not import from levels/ runtime/ or server/"
 name = "level isolation"
 type = "independence"
 modules = [
-  "openloom.levels.manual",
-  "openloom.levels.config",
-  "openloom.levels.inbox",
   "openloom.levels.notify",
-  "openloom.levels.openspec",
-  "openloom.levels.ui",
   "openloom.levels.server",
 ]
 message = "Levels must not import from each other"
@@ -117,12 +107,7 @@ type = "forbidden"
 source_modules = ["openloom.server"]
 forbidden_modules = [
   "openloom.levels",
-  "openloom.levels.manual",
-  "openloom.levels.config",
-  "openloom.levels.inbox",
   "openloom.levels.notify",
-  "openloom.levels.openspec",
-  "openloom.levels.ui",
   "openloom.levels.server",
 ]
 message = "server/ must be level-agnostic — it consumes core/ + runtime/ only"
