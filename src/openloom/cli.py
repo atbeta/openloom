@@ -1,32 +1,28 @@
+"""
+openloom CLI — only the ``serve`` subcommand is shipped in 0.12.
+
+Earlier releases also offered ``init`` (write a starter
+``openloom.yaml``), ``watch`` (single-spec runner with manual
+checks / acceptance / step-acknowledgement), ``status`` and
+``log`` (task CLI inspection). All of those belonged to the
+manual-mode workflow that 0.12 removes. The web dashboard is
+the single control surface now; the CLI exists only to start
+the server.
+"""
 from __future__ import annotations
 
 import argparse
 import asyncio
-import contextlib
 import dataclasses
 import importlib.util
 import logging
 import os
 import platform
 import sys
-from pathlib import Path
 from typing import Any
 
 from openloom import __version__
 from openloom.config import Settings
-from openloom.core.store import Store
-
-
-def _print_table(headers: list[str], rows: list[list[str]]) -> None:
-    col_widths = [len(h) for h in headers]
-    for row in rows:
-        for i, cell in enumerate(row):
-            col_widths[i] = max(col_widths[i], len(str(cell)))
-    fmt = "  ".join(f"{{:<{w}}}" for w in col_widths)
-    print(fmt.format(*headers))
-    print(fmt.format(*["─" * w for w in col_widths]))
-    for row in rows:
-        print(fmt.format(*[str(c) for c in row]))
 
 
 def _web_extras_available() -> bool:
@@ -74,15 +70,6 @@ def _print_banner(args: argparse.Namespace, settings: Settings) -> None:
             print(f"  notify    {len(settings.notify.webhooks)} webhook(s)")
         for wh in settings.notify.webhooks:
             print(f"    - {wh.url}  events={sorted(wh.events)}")
-        if settings.notify.files:
-            print(f"  notify    {len(settings.notify.files)} file sink(s)")
-        for fe in settings.notify.files:
-            print(f"    - dir={fe.directory}  events={sorted(fe.events)}")
-        if settings.inbox_dir is not None:
-            print(
-                f"  inbox     {settings.inbox_dir}/{settings.inbox_filename}"
-                f"  poll={settings.inbox_poll_interval_seconds:.0f}s"
-            )
     print()
 
 
@@ -104,7 +91,7 @@ def _apply_serve_overrides(
     """Apply ``--host`` / ``--port`` overrides to a Settings instance.
 
     Only the UI bind address should be touched; every other field
-    (notify sinks, inbox, task limits, etc.) must come from the
+    (notify sinks, task limits, etc.) must come from the
     env-derived settings. Constructing a fresh ``Settings(...)`` here
     would silently drop those env-loaded values, so we use
     ``dataclasses.replace`` to patch only what changed.
@@ -125,96 +112,10 @@ def _build_notify_sinks(settings: Settings) -> list[Any]:
     return build_sinks(settings.notify)
 
 
-def _build_inbox_factory(settings: Settings) -> Any:
-    """Return a factory that spawns the inbox watcher task, or ``None`` if disabled.
-
-    Kept as a factory so ``levels.server`` stays level-agnostic — it just
-    calls ``factory(harness)`` to receive background ``asyncio.Task``s.
-    """
-    if settings.inbox_dir is None:
-        return None
-
-    from openloom.levels.inbox.watcher import InboxWatcher
-    from openloom.runtime.prompts import TaskSpec
-
-    def factory(harness: Any) -> list[Any]:
-        assert settings.inbox_dir is not None  # guarded by caller
-
-        async def inbox_dispatch(payload: dict[str, Any]) -> str | None:
-            spec_dict = {k: v for k, v in payload.items() if not k.startswith("_")}
-            session_id = str(payload.get("_session_id") or "").strip()
-            return harness.add_task(
-                TaskSpec.from_dict(spec_dict),
-                active_session_id=session_id or None,
-                session_ids=[session_id] if session_id else None,
-            )
-
-        watcher = InboxWatcher(
-            directory=settings.inbox_dir,
-            dispatch=inbox_dispatch,
-            default_workspace=settings.inbox_default_workspace,
-            default_session_id=settings.inbox_default_session,
-            filename=settings.inbox_filename,
-            poll_interval_seconds=settings.inbox_poll_interval_seconds,
-        )
-        return [asyncio.create_task(watcher.run())]
-
-    return factory
-
-
-async def _run_watch_with_ui(
-    spec: str | None,
-    settings: Settings,
-    web_sink: Any,
-    extra_sinks: Any,
-    *,
-    store_path: Path,
-) -> None:
-    import uvicorn
-
-    from openloom.levels.manual.watch import run_watch
-    from openloom.runtime import prompts
-    from openloom.runtime.factory import build_harness
-    from openloom.server.app import create_app
-
-    bundle = build_harness(
-        settings,
-        store_path=store_path,
-        extra_sinks=[web_sink, *extra_sinks],
-    )
-    store, bus, _, harness = bundle.store, bundle.bus, bundle.client, bundle.harness
-
-    app = create_app(
-        harness=harness, store=store, bus=bus, web_sink=web_sink,
-        settings=settings, parse_spec=prompts.parse_task_spec,
-    )
-    config = uvicorn.Config(
-        app, host=settings.ui_host, port=settings.ui_port, log_level="warning"
-    )
-    server = uvicorn.Server(config)
-    server_task = asyncio.create_task(server.serve())
-
-    try:
-        await run_watch(
-            spec,
-            settings,
-            store_path=store_path,
-            bus=bus,
-            web_sink=web_sink,
-            harness=harness,
-            extra_sinks=extra_sinks,
-        )
-    finally:
-        server.should_exit = True
-        server_task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await server_task
-
-
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="openloom",
-        description="OpenLoom — lightweight agent task harness",
+        description="OpenLoom — webhook-driven agent task harness",
     )
     parser.add_argument(
         "--verbose", "-v", action="store_true",
@@ -222,129 +123,31 @@ def main() -> None:
     )
     sub = parser.add_subparsers(dest="command")
 
-    watch_p = sub.add_parser("watch", help="Watch a task spec and manage the agent session")
-    watch_p.add_argument("spec", nargs="?", help="Path to task spec YAML (reads openloom.yaml if omitted)")
-    watch_p.add_argument("--ui", action="store_true", help="Start web UI on http://127.0.0.1:55413")
-
-    serve_p = sub.add_parser("serve", help="Start OpenLoom server (multi-task, web dashboard)")
+    serve_p = sub.add_parser(
+        "serve", help="Start the OpenLoom server (web dashboard + REST/webhook API)",
+    )
     serve_p.add_argument("--host", help="Bind host (default: 127.0.0.1)")
     serve_p.add_argument("--port", type=int, help="Bind port (default: 55413)")
-
-    init_p = sub.add_parser("init", help="Generate openloom.yaml in the current directory")
-    init_p.add_argument("--path", help="Target path (default: ./openloom.yaml)")
-
-    sub.add_parser("status", help="List all tasks from the store")
-
-    log_p = sub.add_parser("log", help="Show check log for a task")
-    log_p.add_argument("task_id", help="Task ID (prefix match supported)")
 
     args = parser.parse_args()
     settings = Settings.from_env()
     notify_sinks = _build_notify_sinks(settings)
-    inbox_factory = _build_inbox_factory(settings)
 
     # Banner + log level: print as early as possible so the user sees
-    # something on stdout even while the heavier subsystems import
-    # (fastapi, uvicorn for `serve`; the prompt parser for `watch`).
+    # something on stdout even while the heavier subsystems import.
     _print_banner(args, settings)
     _configure_logging(_is_verbose(args))
 
-    if args.command == "init":
-        from openloom.levels.config.spec import generate_config
-
-        try:
-            path = generate_config(args.path)
-            print(f"Created {path}")
-        except FileExistsError as e:
-            print(f"ERROR: {e}")
-            sys.exit(1)
-
-    elif args.command == "watch":
-        store_path = settings.database_path
-        if args.ui:
-            try:
-                _require_web_extras()
-            except ImportError as e:
-                print(f"ERROR: {e}")
-                sys.exit(1)
-            from openloom.levels.ui.sink import WebSink
-
-            web_sink = WebSink()
-            asyncio.run(
-                _run_watch_with_ui(
-                    args.spec, settings, web_sink, notify_sinks, store_path=store_path,
-                )
-            )
-        else:
-            from openloom.levels.manual.watch import run_watch
-
-            asyncio.run(
-                run_watch(
-                    args.spec, settings, store_path=store_path, extra_sinks=notify_sinks,
-                )
-            )
-
-    elif args.command == "serve":
-        import openloom.levels.manual.checker  # noqa: F401
-        import openloom.levels.manual.sink  # noqa: F401
-        import openloom.levels.ui.sink  # noqa: F401
+    if args.command == "serve":
         from openloom.levels.server.serve import run_serve
 
         settings = _apply_serve_overrides(settings, host=args.host, port=args.port)
-
         asyncio.run(
             run_serve(
                 settings,
                 extra_sinks=notify_sinks,
-                background_tasks_factory=inbox_factory,
             )
         )
-
-    elif args.command == "status":
-        store = Store(settings.database_path)
-        tasks = store.list_tasks()
-        if not tasks:
-            print("No tasks found.")
-            return
-        headers = ["ID", "Name", "Status", "Progress", "Last Summary"]
-        rows = [
-            [
-                t["id"][:12],
-                t.get("name", "")[:40],
-                t.get("status", ""),
-                f"{t.get('progress', 0):.0%}",
-                (t.get("last_summary") or "")[:50],
-            ]
-            for t in tasks
-        ]
-        _print_table(headers, rows)
-
-    elif args.command == "log":
-        import datetime
-
-        store = Store(settings.database_path)
-        prefix = args.task_id
-        tasks = store.list_tasks()
-        match = next((t for t in tasks if t["id"].startswith(prefix)), None)
-        if not match:
-            print(f"No task found matching '{prefix}'")
-            sys.exit(1)
-        task = store.get_task(match["id"])
-        if task is None:
-            print(f"No task found matching '{prefix}'")
-            sys.exit(1)
-        print(f"Task:  {task['id']} — {task.get('name', '')}")
-        print(f"Status: {task.get('status', '')}  Progress: {task.get('progress', 0):.0%}")
-        print()
-        log = task.get("check_log") or []
-        for entry in log[-20:]:
-            ts = entry.get("at", 0)
-            dt = datetime.datetime.fromtimestamp(ts).strftime("%H:%M:%S")
-            print(f"  [{dt}] {entry.get('status', '')}")
-            print(f"         {entry.get('summary', '')}")
-        if len(log) > 20:
-            print(f"  ... ({len(log) - 20} more entries)")
-
     else:
         parser.print_help()
         sys.exit(1)

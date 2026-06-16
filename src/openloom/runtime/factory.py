@@ -2,8 +2,8 @@
 Harness assembly factory — single source of truth for wiring up
 Store + EventBus + OpenCodeClient + HarnessRunner.
 
-Used by ``levels/server/serve.py``, ``cli.py``, and ``levels/manual/watch.py``
-to eliminate duplicated assembly boilerplate.
+Used by ``levels/server/serve.py`` and ``cli.py`` to eliminate
+duplicated assembly boilerplate.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from typing import Any
 
 from openloom.core.events import EventBus
 from openloom.core.harness import HarnessRunner
-from openloom.core.registry import get_checker, get_sink
+from openloom.core.registry import get_sink
 from openloom.core.store import Store
 from openloom.runtime import prompts, session_status
 from openloom.runtime.opencode import OpenCodeClient
@@ -43,7 +43,7 @@ def build_harness(
     """Assemble and return a fully-wired HarnessBundle.
 
     Parameters allow callers to inject pre-existing objects (e.g. when
-    ``watch`` reuses an existing store/bus) or fall back to fresh ones.
+    testing) or fall back to fresh ones.
     """
     db_path = store_path or settings.database_path
     store = store or Store(db_path)
@@ -61,16 +61,12 @@ def build_harness(
     for ns in (extra_sinks or ()):
         bus.subscribe_all(ns.on_event)
 
-    checker = get_checker("string")()
     harness = HarnessRunner(
         opencode=client,
         bus=bus,
         store=store,
-        checker=checker,
         prompts=prompts,
         status=session_status,
-        max_task_tokens=getattr(settings, "max_task_tokens", None),
-        max_task_runtime_minutes=getattr(settings, "max_task_runtime_minutes", None),
     )
 
     return HarnessBundle(
@@ -79,3 +75,4 @@ def build_harness(
         bus=bus,
         client=client,
     )
+

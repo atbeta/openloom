@@ -1,28 +1,21 @@
-"""Tests for the notify level — sinks, config loader, and builder."""
+"""Tests for the notify level — webhook sink, config loader, builder."""
 
 from __future__ import annotations
 
 import json
 import threading
-from pathlib import Path
 
 import httpx
 import pytest
 import respx
 
 from openloom.core.events import Event, EventType
-from openloom.levels.notify import (
-    FileSink,
-    NotifyConfig,
-    WebhookSink,
-    build_sinks,
-)
-from openloom.levels.notify.config import (
-    FileEntry,
-    WebhookEntry,
-)
+from openloom.levels.notify import NotifyConfig, WebhookSink, build_sinks
 from openloom.levels.notify.config import (
     NotifyConfig as NotifyConfigCls,
+)
+from openloom.levels.notify.config import (
+    WebhookEntry,
 )
 
 
@@ -47,7 +40,6 @@ def test_config_from_mapping_empty() -> None:
     cfg = NotifyConfig.from_mapping(None)
     assert not cfg.enabled
     assert cfg.webhooks == []
-    assert cfg.files == []
 
 
 def test_config_from_mapping_webhook() -> None:
@@ -69,14 +61,6 @@ def test_config_from_mapping_webhook() -> None:
     assert entry.headers == {"X-Token": "abc"}
 
 
-def test_config_from_mapping_file_relative_resolves_to_cwd(tmp_path: Path) -> None:
-    cfg = NotifyConfigCls.from_mapping({
-        "file": [{"dir": "notes", "events": "*"}],
-    })
-    assert len(cfg.files) == 1
-    assert cfg.files[0].directory == Path.cwd() / "notes"
-
-
 def test_config_from_mapping_event_filter_string_comma() -> None:
     cfg = NotifyConfigCls.from_mapping({
         "webhook": [{"url": "https://x", "events": "A,B"}],
@@ -92,33 +76,24 @@ def test_config_from_mapping_event_filter_default_is_wildcard() -> None:
 
 
 def test_config_from_mapping_rejects_non_mapping_entry() -> None:
+    import pytest
     with pytest.raises(ValueError, match="entries must be mappings"):
         NotifyConfigCls.from_mapping({"webhook": ["bad"]})
 
 
 def test_config_from_mapping_rejects_webhook_without_url() -> None:
+    import pytest
     with pytest.raises(ValueError, match="missing 'url'"):
         NotifyConfigCls.from_mapping({"webhook": [{}]})
-
-
-def test_config_from_mapping_rejects_file_without_dir() -> None:
-    with pytest.raises(ValueError, match="missing 'dir'"):
-        NotifyConfigCls.from_mapping({"file": [{}]})
 
 
 def test_config_from_env_returns_empty_when_unset(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    for name in (
-        "OPENLOOM_NOTIFY_WEBHOOK_URLS",
-        "OPENLOOM_NOTIFY_WEBHOOK_EVENTS",
-        "OPENLOOM_NOTIFY_FILE_DIRS",
-        "OPENLOOM_NOTIFY_FILE_EVENTS",
-    ):
+    for name in ("OPENLOOM_NOTIFY_WEBHOOK_URLS", "OPENLOOM_NOTIFY_WEBHOOK_EVENTS"):
         monkeypatch.delenv(name, raising=False)
     cfg = NotifyConfigCls.from_env()
     assert cfg.webhooks == []
-    assert cfg.files == []
 
 
 def test_config_from_env_parses_csv_urls(
@@ -223,40 +198,6 @@ def test_webhook_sends_custom_headers() -> None:
     assert captured.headers["Authorization"] == "Bearer t"
 
 
-# --- FileSink ---
-
-
-def test_file_sink_writes_one_file_per_matching_event(tmp_path: Path) -> None:
-    sink = FileSink(directory=tmp_path, events=frozenset({"TASK_COMPLETED"}))
-    sink.on_event(_event(EventType.TASK_COMPLETED))
-    sink.on_event(_event(EventType.TASK_FAILED, task_id="t-2"))
-    files = sorted(p.name for p in tmp_path.iterdir())
-    assert len(files) == 1
-    payload = json.loads((tmp_path / files[0]).read_text())
-    assert payload["event"] == "TASK_COMPLETED"
-    assert payload["task_id"] == "t-1"
-
-
-def test_file_sink_creates_missing_directory(tmp_path: Path) -> None:
-    target = tmp_path / "deep" / "nested"
-    FileSink(directory=target)
-    assert target.is_dir()
-
-
-def test_file_sink_wildcard_writes_everything(tmp_path: Path) -> None:
-    sink = FileSink(directory=tmp_path)
-    sink.on_event(_event(EventType.TASK_CREATED))
-    sink.on_event(_event(EventType.TASK_UPDATED))
-    sink.on_event(_event(EventType.TASK_FAILED))
-    assert len(list(tmp_path.iterdir())) == 3
-
-
-def test_file_sink_sanitises_prefix() -> None:
-    sink = FileSink(directory=Path("/tmp"), prefix="my/loopy prefix!")
-    # constructor should not raise; sanitisation is internal
-    assert sink._prefix == "my-loopy-prefix-"
-
-
 # --- builder ---
 
 
@@ -268,79 +209,8 @@ def test_build_sinks_handles_empty_config() -> None:
     assert build_sinks(NotifyConfig.empty()) == []
 
 
-def test_build_sinks_emits_both_kinds(tmp_path: Path) -> None:
-    cfg = NotifyConfig(
-        webhooks=[WebhookEntry(url="https://x")],
-        files=[FileEntry(directory=tmp_path)],
-    )
+def test_build_sinks_emits_webhook(tmp_path) -> None:
+    cfg = NotifyConfig(webhooks=[WebhookEntry(url="https://x")])
     sinks = build_sinks(cfg)
-    assert len(sinks) == 2
+    assert len(sinks) == 1
     assert isinstance(sinks[0], WebhookSink)
-    assert isinstance(sinks[1], FileSink)
-
-
-# --- payload schema: task_name + timestamp_iso ---
-
-
-def _named_event(task_name: str = "Fix the bug") -> Event:
-    return Event(
-        type=EventType.TASK_COMPLETED,
-        task_id="t-1",
-        timestamp=1_700_000_000.0,
-        store_version=3,
-        task_name=task_name,
-        data={"status": "completed", "summary": "ok"},
-    )
-
-
-@respx.mock
-def test_webhook_payload_includes_task_name_and_iso_timestamp() -> None:
-    route = respx.post("https://example.com/hook").mock(
-        return_value=httpx.Response(200, text="ok"),
-    )
-    sink = WebhookSink(url="https://example.com/hook")
-    sink.on_event(_named_event("Fix the bug"))
-    sink.close()
-
-    body = json.loads(route.calls.last.request.content)
-    assert body["task_name"] == "Fix the bug"
-    assert body["timestamp"] == 1_700_000_000.0
-    # 2023-11-14 22:13:20 UTC — fixed point chosen so the test
-    # is not affected by the wall clock the runner sees.
-    assert body["timestamp_iso"] == "2023-11-14T22:13:20Z"
-
-
-@respx.mock
-def test_webhook_payload_task_name_empty_when_not_set() -> None:
-    """Older call sites that omit task_name still serialise the
-    field as an empty string rather than dropping it — sinks and
-    webhook handlers that key on the presence of the field are
-    not surprised by its absence."""
-    route = respx.post("https://example.com/hook").mock(
-        return_value=httpx.Response(200),
-    )
-    sink = WebhookSink(url="https://example.com/hook")
-    sink.on_event(_event())  # no task_name
-    sink.close()
-
-    body = json.loads(route.calls.last.request.content)
-    assert body["task_name"] == ""
-    # timestamp_iso is still computed from the float — always present.
-    assert body["timestamp_iso"] == "2023-11-14T22:13:20Z"
-
-
-def test_file_sink_writes_task_name_and_iso_timestamp(tmp_path: Path) -> None:
-    sink = FileSink(directory=tmp_path)
-    sink.on_event(_named_event("Implement retry"))
-    payload = json.loads((tmp_path / next(tmp_path.iterdir())).read_text())
-    assert payload["task_name"] == "Implement retry"
-    assert payload["timestamp_iso"] == "2023-11-14T22:13:20Z"
-
-
-def test_iso_utc_helper_format() -> None:
-    from openloom.core.events import iso_utc
-
-    # Pin a known instant: 2026-06-15T03:10:56Z (matches the user
-    # complaint — they saw the float and asked for an ISO version).
-    epoch = 1_781_493_056.0
-    assert iso_utc(epoch) == "2026-06-15T03:10:56Z"

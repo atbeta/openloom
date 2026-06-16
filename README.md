@@ -5,20 +5,25 @@
 
 **Don't trust the agent's word — trust the file system.**
 
-OpenLoom is a lightweight harness and observer for [OpenCode](https://github.com/opencode-ai/opencode). It schedules tasks, watches sessions, verifies completion with file-system checks instead of model self-reports, and keeps you notified from anywhere — even when a long-running task gets stuck on a hung child process.
+OpenLoom is a webhook-driven task harness and observer for [OpenCode](https://github.com/opencode-ai/opencode). Webhook handlers call `POST /api/tasks` to dispatch a goal; OpenLoom attaches the goal to an OpenCode session, watches the session for activity, and emits a stream of `TASK_UPDATED` events on the bus. Webhook consumers can take over a stuck session with `POST /api/tasks/{id}/abort` and follow up with a fresh prompt — even from a phone, without touching the host.
 
-OpenLoom does **not** replace OpenCode. It fills the gaps in OpenCode's HTTP API: session monitoring, task plans, periodic checks, a web dashboard, an inbox for remote dispatch, and webhook / file notifications.
+OpenLoom does **not** replace OpenCode. It fills the gaps in OpenCode's HTTP API: a JSON task API, a session monitor, a webhook notification fan-out, and a web dashboard for browsing live work.
 
-## What's in 0.10
+## What's in 0.12
 
-- **Inbox dispatch** — drop a markdown file (or POST to a webhook) to enqueue a task from anywhere. Bind it to an existing session, or spin up a new one.
-- **Abort & resume** — send a markdown with `abort: true` and `session: <id>` to take over a stuck session from your phone.
-- **Notifications** — webhook + file sinks for every harness event, including a new `SESSION_STALE_BUSY` alert that fires when a session has been busy with no progress for N consecutive checks.
-- **Config summary card** — the web dashboard now shows at a glance which channels are live (inbox watcher, webhooks, file sinks).
-- **UI refresh** — JetBrains Mono, less AI-app feel, Windows font parity.
-- **Architecture hardening** — `core.protocols` (typed injection), `runtime.factory.build_harness()` (single assembly), connection-pool reuse on the OpenCode client.
+0.12 is a YAGNI cut. The previous release also offered an `openloom watch` runner (single-spec file mode with manual checks / acceptance / step-acknowledgement), a file-inbox dispatch path, a stale-busy alert, file-based notification sinks, and an AI task planner. All of that is gone. The webhook API below is the single control surface.
 
-Full notes per feature: [docs/inbox.md](docs/inbox.md), [docs/notifications.md](docs/notifications.md), [docs/architecture.md](docs/architecture.md).
+What stayed:
+
+- The 0.10 task lifecycle (create / start / update / complete / fail / archive / delete).
+- The 0.11 webhook notification format with `task_name` + `timestamp` + `timestamp_iso` + `recent_activity` (last 3 assistant messages, 1 000 chars each, with a tool-call summary).
+- The web dashboard (Dashboard / Activity / Tasks / Permissions / session drawer).
+
+What's new in 0.12:
+
+- **`POST /api/tasks/{id}/abort`** — break a stuck agent loop on the task's session before sending a follow-up prompt.
+- **`TaskSpec` reduced to three fields** (`name`, `workspace`, `goal`) — every webhook handler payload is now 4 lines.
+- **Single CLI subcommand** — `openloom serve` is the only thing the CLI does. `init`, `watch`, `status`, `log` are removed.
 
 ## Install
 
@@ -40,15 +45,12 @@ Optional extras — pick what you need; there is intentionally no `[all]`:
 
 | Extra | Purpose |
 |-------|---------|
-| `ui` | Web dashboard (`openloom serve`, `openloom watch --ui`) |
-| `server` | Same as `ui` (team server mode alias) |
-| `openspec` | OpenSpec checkbox completion checks (cold-detected) |
-| `github` | GitHub integration |
-| `validate` | Pre-archive validation hooks (your project's pytest/mypy) |
+| `ui` | Web dashboard (`openloom serve`) |
+| `server` | Same as `ui` (alias) |
 
 ## Quick start
 
-### 0. Start OpenCode
+### 1. Start OpenCode
 
 OpenLoom talks to OpenCode over HTTP. In a separate terminal:
 
@@ -57,9 +59,9 @@ opencode serve
 # or launch the OpenCode app / TUI (it also exposes the API on port 4096)
 ```
 
-If OpenCode is not running, `openloom watch` exits with setup hints; `openloom serve` starts the dashboard but session features stay offline until OpenCode is up.
+If OpenCode is not running, `openloom serve` starts the dashboard but session features stay offline until OpenCode is up.
 
-### 1. Configure the OpenCode connection (optional)
+### 2. Configure the OpenCode connection (optional)
 
 Most local setups need **no env vars** — OpenLoom defaults to `http://127.0.0.1:4096` with no HTTP auth (same as `opencode serve` without `OPENCODE_SERVER_PASSWORD`).
 
@@ -71,149 +73,126 @@ export OPENLOOM_OPENCODE_USERNAME=opencode
 export OPENLOOM_OPENCODE_PASSWORD=your-password
 ```
 
-Windows (PowerShell):
-
-```powershell
-$env:OPENLOOM_OPENCODE_URL = "http://127.0.0.1:4096"
-$env:OPENLOOM_OPENCODE_USERNAME = "opencode"
-$env:OPENLOOM_OPENCODE_PASSWORD = "your-password"
-```
-
 Full env-var reference: [docs/configuration.md](docs/configuration.md).
 
-### 2. CLI — watch a task spec
+### 3. Start OpenLoom
 
 ```bash
-openloom init                    # writes openloom.yaml in cwd
-openloom watch                   # run harness from openloom.yaml
-openloom watch --ui              # same + local web UI (needs [ui])
-openloom watch --verbose         # debug-level logs
-openloom status
-openloom log <task-id-prefix>
-openloom serve --host 127.0.0.1 --port 55413
-```
-
-Example spec (`openloom.yaml`):
-
-```yaml
-name: Fix SSE reconnect
-workspace: /path/to/project
-check_interval_minutes: 5   # minimum 5; all tasks are harness-watched
-goal: |
-  Fix SSE reconnect after network drop.
-steps:
-  - Investigate current SSE implementation
-  - Implement reconnect with backoff
-  - Add regression coverage
-```
-
-### 3. Web dashboard — multi-task server
-
-```bash
-pip install "openloom[ui]"
 openloom serve
+# or with overrides
+openloom serve --host 0.0.0.0 --port 55413
 ```
 
 Open `http://127.0.0.1:55413` for:
 
-- **Dashboard** — session token usage, by-model breakdown, period summaries (today / week / month / total)
-- **Activity** — tasks, archived tasks, sessions by workspace, **config summary card** showing live inbox / webhook / file-sink status, **stuck-session pill** when any session has been busy without progress
-- **New Task** — plan with goal / steps / acceptance, attach to a workspace or an existing session
-- **Permissions** — pending tool approvals with Once / Always / Deny (optional auto-accept, OpenCode Desktop–compatible)
-- **Session drawer** — messages, usage, diff, metadata per session
+- **Dashboard** — task list, per-session token usage, model breakdown.
+- **Activity** — sessions by workspace, archived tasks.
+- **New Task** — the same `POST /api/tasks` body as a webhook would send.
+- **Permissions** — pending tool approvals with Once / Always / Deny.
+- **Session drawer** — full transcript, diff, metadata.
 
 The UI static assets are **pre-built inside the wheel** — no Node.js required at install time.
 
-## Remote dispatch — the inbox
-
-The inbox turns any device that can write a file (or POST an HTTP request) into a dispatch surface.
+### 4. Create a task via webhook
 
 ```bash
-# 1. Point OpenLoom at a directory on the host
-export OPENLOOM_INBOX_DIR=/path/to/inbox
-openloom serve   # or openloom watch
+curl -X POST http://127.0.0.1:55413/api/tasks \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "Fix the type error",
+    "workspace": "/Users/you/project",
+    "goal": "There is a type error in src/foo.ts line 42. Fix it and run npm test."
+  }'
 ```
 
-Drop a markdown into `/path/to/inbox/task.md`:
+The response is `{ok, taskId, status, name, workspace, sessionId}`. The task is now `pending`; on the next harness tick (within 8 seconds) it transitions to `running` with an OpenCode session id bound to it.
 
-```markdown
-# Implement retry policy
+If you have a webhook configured, the next events arrive on it:
 
-workspace: /Users/you/project
-
-## goal
-Add exponential backoff to the SDK's HTTP client.
+```json
+{
+  "event": "TASK_STARTED",
+  "task_id": "task_abc123",
+  "task_name": "Fix the type error",
+  "timestamp": 1749999999.123,
+  "timestamp_iso": "2026-06-15T00:00:00Z",
+  "store_version": 1,
+  "data": {
+    "session_id": "ses_xyz789",
+    "summary": "Harness started and bootstrap prompt sent"
+  }
+}
 ```
 
-OpenLoom polls every 30 s (configurable), consumes the file, creates a task, and renames the file to `processed-<id>`. From the UI or the CLI, you can also POST to `/api/inbox/trigger` instead of writing a file.
-
-**Bind to an existing session** so a follow-up turns append to the same transcript:
-
-```markdown
-# Continue the type check
-
-session: ses_abc
-workspace: /Users/you/project
-
-## goal
-Pick up from where you left off.
-```
-
-**Take over a stuck session from anywhere** — when you receive a `SESSION_STALE_BUSY` alert, drop a file like this:
-
-```markdown
-# Resume the long task
-
-session: ses_abc
-abort: true
-workspace: /Users/you/project
-
-## goal
-Stop the hung npm install and finish the type check.
-```
-
-`abort: true` is opt-in. OpenLoom calls `POST /session/ses_abc/abort` (releasing any in-flight tool) and then `prompt_async` with your new goal, so the agent picks up the new task immediately. Full schema and examples: [docs/inbox.md](docs/inbox.md).
-
-## Notifications
-
-Configure webhook or file sinks to receive harness events anywhere:
+### 5. Take over a stuck session
 
 ```bash
-# Webhook — POST a JSON event to your endpoint
-export OPENLOOM_NOTIFY_WEBHOOK_URLS='https://hooks.example.com/openloom'
+# 1. Get the stuck task's id from the webhook or dashboard
+TASK=task_abc123
 
-# File sink — one JSON file per event written to the directory
-export OPENLOOM_NOTIFY_FILE_DIRS=/var/log/openloom-events
-export OPENLOOM_NOTIFY_FILE_PREFIX=openloom
+# 2. Abort the in-flight agent loop on the task's session
+curl -X POST http://127.0.0.1:55413/api/tasks/$TASK/abort
+
+# 3. Archive the old task so it stops showing in the active list
+curl -X POST http://127.0.0.1:55413/api/tasks/$TASK/archive
+
+# 4. Send a follow-up prompt as a new task bound to the same session
+curl -X POST http://127.0.0.1:55413/api/tasks \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "name": "Take over: fix the type error",
+    "sessionId": "ses_xyz789",
+    "goal": "Forget what you were doing. Just look at src/foo.ts line 42 and fix the type error."
+  }'
 ```
 
-Built-in event types:
+The new task binds to the same OpenCode session; the old task is archived. The session itself keeps its full transcript — both the old and new task can be opened in the dashboard and read each other's messages.
 
-| Event | When |
-|-------|------|
-| `TASK_CREATED` | A new task was added to the store |
-| `TASK_STARTED` | The harness started the first turn of a task |
-| `TASK_UPDATED` | Progress, status, or step change |
-| `TASK_COMPLETED` | The agent reported completion (or auto-archive) |
-| `TASK_FAILED` | Budget exceeded, session lost, etc. |
-| `LOG_LINE` | Notable log line (e.g. abort failure) |
-| `SESSION_STALE_BUSY` | A session has been busy for `OPENLOOM_STALE_BUSY_CHECKS` consecutive checks (default 10) with no new completed message — typically a hung child process |
+## API surface
 
-`SESSION_STALE_BUSY` is **one-shot per stuck episode** — the latch releases when the session recovers. The alert carries the session id, title, workspace, and stuck duration, so a webhook handler can deep-link to the session drawer.
+```
+POST   /api/tasks                       create a task from {name, workspace, goal, sessionId?}
+GET    /api/tasks                       list tasks
+GET    /api/tasks/{id}                  task detail
+POST   /api/tasks/{id}/abort            release any in-flight agent loop on the task's session
+POST   /api/tasks/{id}/pause            pause a running task
+POST   /api/tasks/{id}/resume           resume a paused task
+POST   /api/tasks/{id}/complete         mark a task complete
+POST   /api/tasks/{id}/archive          archive a task
+DELETE /api/tasks/{id}                  delete an archived task
 
-Full payload schema and per-event filtering: [docs/notifications.md](docs/notifications.md).
+GET    /api/sessions                    list sessions (monitor snapshot)
+GET    /api/sessions/{id}/messages      full transcript
+GET    /api/sessions/{id}/diff          accumulated diff
+GET    /api/permissions                 list pending permissions
+POST   /api/sessions/{id}/permissions/{pid}   respond to a permission
+POST   /api/sessions/{id}/archive       archive a session
+POST   /api/sessions/{id}/delete        hard-delete a session
+
+GET    /api/state                       composite dashboard state
+GET    /api/events                      server-sent event stream
+GET    /api/recent-workspaces           recently used workspaces
+DELETE /api/recent-workspaces           remove from recent
+GET    /api/browse                      directory listing for the path picker
+POST   /api/pick-folder                 native OS folder picker
+```
+
+Webhook payload format and event types: [docs/notifications.md](docs/notifications.md).
 
 ## Architecture (short)
 
 ```
-core/      Harness, store, event bus, Source / Checker / Sink ABCs (lean)
-runtime/   OpenCode HTTP client, session status, prompts
-levels/    Progressive capabilities (manual, config, openspec, ui, inbox, notify, server, …)
+core/      Harness, store, event bus, protocols
+runtime/   OpenCode HTTP client, prompts
+levels/
+  notify/  WebhookSink + NotifyConfig
+  server/  SessionMonitor, WebSink, ConsoleSink, serve
 server/    FastAPI app + routes + static UI ([ui] extra)
-docs/      Detailed guides (inbox, notifications, configuration, architecture)
+docs/      Detailed guides (configuration, notifications, architecture)
+tests/     contracts/ holds the architecture-enforcement tests
 ```
 
-State changes flow: **store write → event emit**. API routes read the store; the event bus pushes notifications only. See [docs/architecture.md](docs/architecture.md) for the contracts that keep this honest.
+State changes flow: **store write → event emit → sinks**. API routes only read the store; the event bus pushes notifications, not data. Details: [docs/architecture.md](docs/architecture.md).
 
 ## Development
 
@@ -221,6 +200,7 @@ State changes flow: **store write → event emit**. API routes read the store; t
 uv sync
 uv run pytest
 uv run ruff check src/ tests/
+uv run mypy src/openloom
 
 # Rebuild frontend into the package (before release)
 cd frontend && npm install && npm run build

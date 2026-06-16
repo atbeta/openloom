@@ -5,7 +5,6 @@
 
   let state = $state({
     server: { ok: false, url: '', message: 'loading' },
-    staleBusy: { thresholdChecks: 10, sessionIds: [] },
     recentWorkspaces: [],
     tasks: [],
     sessions: [],
@@ -13,8 +12,7 @@
     archivedSessions: [],
     sessionStatus: {},
     permissions: [],
-    inbox: { enabled: false },
-    notify: { webhooks: [], files: [] },
+    notify: { webhooks: [] },
     metrics: { running: 0, waiting: 0, failed: 0, completedToday: 0, sessionsBusy: 0, sessionsIdle: 0, sessionsRetry: 0 },
     usage: {
       periods: {
@@ -65,48 +63,11 @@
   let selectedTaskId = $state(null);
 
   let taskWorkspace = $state('');
-  let taskCheckInterval = $state(5);
-  const AUTO_ACCEPT_PREFS_KEY = 'openloom.prefs.autoAcceptPermissions';
-
-  function loadAutoAcceptPref() {
-    if (typeof localStorage === 'undefined') return false;
-    const raw = localStorage.getItem(AUTO_ACCEPT_PREFS_KEY);
-    if (raw === null) return false;
-    return raw === 'true';
-  }
-
-  function saveAutoAcceptPref(value) {
-    if (typeof localStorage !== 'undefined') {
-      localStorage.setItem(AUTO_ACCEPT_PREFS_KEY, value ? 'true' : 'false');
-    }
-  }
-
-  let taskAutoAcceptPermissions = $state(loadAutoAcceptPref());
-  let taskPlan = $state({
-    title: '',
-    goal: '',
-    steps: [{ title: '', acceptance: [] }],
-    globalAcceptance: [],
-  });
+  let taskName = $state('');
+  let taskGoal = $state('');
   let taskTarget = $state('workspace');
   let selectedProjectDir = $state('');
   let selectedSessionId = $state('');
-  let _autoSessionPicked = false;
-
-  let collapsedDirs = $state(new Set());
-  let collapsedDirsInitialized = false;
-  $effect(() => {
-    if (collapsedDirsInitialized) return;
-    if (sortedDirectories.length === 0) return;
-    collapsedDirsInitialized = true;
-    collapsedDirs = new Set(sortedDirectories);
-  });
-
-  let drawerSessionId = $state('');
-  let drawerTab = $state('messages');
-  let drawerLoading = $state(false);
-  let drawerRefreshing = $state(false);
-  let drawerError = $state('');
   let drawerMessages = $state([]);
   let drawerDiff = $state([]);
   let drawerLoadedAt = $state(0);
@@ -114,13 +75,6 @@
 
   let drawerTaskId = $state('');
   let drawerTaskTab = $state('overview');
-
-  const intervalPresets = [
-    { label: '5m', minutes: 5 },
-    { label: '10m', minutes: 10 },
-    { label: '15m', minutes: 15 },
-    { label: '30m', minutes: 30 },
-  ];
 
   let archivedPopoverOpen = $state(false);
 
@@ -173,22 +127,6 @@
   const activeTasks = $derived((state.tasks || []).filter((task) => task.status !== 'archived'));
   const archivedTasks = $derived((state.tasks || []).filter((task) => task.status === 'archived'));
 
-  const inboxSummary = $derived.by(() => {
-    const ib = state.inbox;
-    if (!ib || !ib.enabled) {
-      return { enabled: false, label: 'Off', detail: 'OPENLOOM_INBOX_DIR not set' };
-    }
-    const dir = ib.directory || '?';
-    const poll = ib.pollIntervalSeconds != null ? `${Math.round(ib.pollIntervalSeconds)}s poll` : '';
-    const file = ib.filename ? `${ib.filename}` : '';
-    const session = ib.defaultSession ? `session:${ib.defaultSession.slice(0, 12)}` : '';
-    return {
-      enabled: true,
-      label: 'Watching',
-      detail: `${dir} · ${file}${poll ? ` · ${poll}` : ''}${session ? ` · ${session}` : ''}`,
-    };
-  });
-
   const webhookSummary = $derived.by(() => {
     const list = state.notify?.webhooks || [];
     if (list.length === 0) {
@@ -199,19 +137,6 @@
       enabled: true,
       label: `${list.length} webhook${list.length === 1 ? '' : 's'}`,
       detail: wh.url,
-    };
-  });
-
-  const fileNotifySummary = $derived.by(() => {
-    const list = state.notify?.files || [];
-    if (list.length === 0) {
-      return { enabled: false, label: 'Off', detail: 'no file sink configured' };
-    }
-    const fe = list[0];
-    return {
-      enabled: true,
-      label: `${list.length} file sink${list.length === 1 ? '' : 's'}`,
-      detail: `${fe.directory} · ${fe.prefix}-*`,
     };
   });
 
@@ -295,20 +220,6 @@
   function statusShowsDot(status) {
     const value = String(status || '').toLowerCase();
     return value === 'busy' || value === 'retry' || value.includes('running') || value.includes('wait');
-  }
-
-  function taskIntervalLabel(task) {
-    const sec = task?.check_interval_seconds || 300;
-    if (sec % 60 === 0) return `${sec / 60}m`;
-    return `${sec}s`;
-  }
-
-  function stepProgressLabel(task) {
-    const total = task?.spec?.steps?.length || 0;
-    if (!total) return task?.status === 'completed' ? 'Done' : '—';
-    const completed = Array.isArray(task?.completed_steps) ? task.completed_steps.length : 0;
-    const done = task?.status === 'completed' ? total : Math.min(completed, total);
-    return `${done}/${total}`;
   }
 
   function sessionStatus(session) {
@@ -776,142 +687,15 @@
     }
   }
 
-  let taskStepExpanded = $state(new Set());
+  // The 0.12 task composer is a flat {name, workspace, goal} form.
+  // There is no plan / step / acceptance builder on the
+  // frontend — those fields are gone from the backend too. The
+  // composer is shared with the Session tab, which lets the user
+  // bind a new task to an existing session id so the harness can
+  // attach the goal to an already-running conversation.
 
-  function emptyPlanStep() {
-    return { title: '', acceptance: [] };
-  }
-
-  function emptyPlan() {
-    return {
-      title: '',
-      goal: '',
-      steps: [emptyPlanStep()],
-      globalAcceptance: [],
-    };
-  }
-
-  function derivePlanName(plan) {
-    const goalLine = plan.goal.trim().split('\n').map((line) => line.trim()).find(Boolean) || '';
-    if (goalLine) {
-      return goalLine.length > 60 ? `${goalLine.slice(0, 59)}…` : goalLine;
-    }
-    const firstStep = plan.steps.find((step) => step.title.trim())?.title.trim() || '';
-    if (firstStep) {
-      return firstStep.length > 60 ? `${firstStep.slice(0, 59)}…` : firstStep;
-    }
-    return 'Untitled task';
-  }
-
-  function resolvePlanName(plan) {
-    const explicit = plan.title?.trim() || '';
-    return explicit || derivePlanName(plan);
-  }
-
-  function addPlanStep() {
-    taskPlan = { ...taskPlan, steps: [...taskPlan.steps, emptyPlanStep()] };
-  }
-
-  function removePlanStep(index) {
-    const steps = taskPlan.steps.filter((_, i) => i !== index);
-    taskPlan = { ...taskPlan, steps: steps.length ? steps : [emptyPlanStep()] };
-  }
-
-  function addStepAcceptance(stepIndex) {
-    const steps = taskPlan.steps.map((step, i) =>
-      i === stepIndex ? { ...step, acceptance: [...step.acceptance, ''] } : step,
-    );
-    taskPlan = { ...taskPlan, steps };
-  }
-
-  function removeStepAcceptance(stepIndex, accIndex) {
-    const steps = taskPlan.steps.map((step, i) => {
-      if (i !== stepIndex) return step;
-      return { ...step, acceptance: step.acceptance.filter((_, j) => j !== accIndex) };
-    });
-    taskPlan = { ...taskPlan, steps };
-  }
-
-  function toggleStepExpanded(index) {
-    const next = new Set(taskStepExpanded);
-    if (next.has(index)) next.delete(index);
-    else next.add(index);
-    taskStepExpanded = next;
-  }
-
-  function openStepChecks(index) {
-    if (!taskStepExpanded.has(index)) {
-      taskStepExpanded = new Set([...taskStepExpanded, index]);
-    }
-    if (taskPlan.steps[index].acceptance.length === 0) {
-      addStepAcceptance(index);
-    }
-  }
-
-  function stepAcceptanceFilledCount(step) {
-    return step.acceptance.filter((item) => item.trim()).length;
-  }
-
-  const taskIntervalIsCustom = $derived(
-    !intervalPresets.some((preset) => preset.minutes === Number(taskCheckInterval)),
-  );
-
-  const taskStartSummary = $derived.by(() => {
-    const steps = planStepCount(taskPlan);
-    const checks = planAcceptanceCount(taskPlan);
-    const parts = [];
-    if (steps) parts.push(`${steps} step${steps === 1 ? '' : 's'}`);
-    if (checks) parts.push(`${checks} check${checks === 1 ? '' : 's'}`);
-    return parts.join(' · ');
-  });
-
-  function addGlobalAcceptance() {
-    taskPlan = { ...taskPlan, globalAcceptance: [...taskPlan.globalAcceptance, ''] };
-  }
-
-  function removeGlobalAcceptance(index) {
-    taskPlan = {
-      ...taskPlan,
-      globalAcceptance: taskPlan.globalAcceptance.filter((_, i) => i !== index),
-    };
-  }
-
-  function planStepCount(plan) {
-    return plan.steps.filter((step) => step.title.trim()).length;
-  }
-
-  function planAcceptanceCount(plan) {
-    const perStep = plan.steps.reduce(
-      (sum, step) => sum + step.acceptance.filter((item) => item.trim()).length,
-      0,
-    );
-    const global = plan.globalAcceptance.filter((item) => item.trim()).length;
-    return perStep + global;
-  }
-
-  function serializePlan(plan) {
-    const steps = plan.steps
-      .map((step) => ({
-        title: step.title.trim(),
-        acceptance: step.acceptance.map((item) => item.trim()).filter(Boolean),
-      }))
-      .filter((step) => step.title);
-    const name = resolvePlanName(plan);
-    const goal = plan.goal.trim() || name;
-    return {
-      name,
-      goal,
-      steps,
-      global_acceptance: plan.globalAcceptance.map((item) => item.trim()).filter(Boolean),
-    };
-  }
-
-  async function createTask({ workspace, checkIntervalMinutes, sessionId = null, target = null } = {}) {
+  async function createTask({ workspace, sessionId = null, target = null } = {}) {
     taskError = '';
-    if (!planStepCount(taskPlan)) {
-      taskError = 'Plan needs at least one step';
-      return;
-    }
     const mode = target ?? taskTarget;
     let resolvedSessionId = sessionId;
     if (mode === 'session') {
@@ -926,14 +710,11 @@
     }
     taskSubmitting = true;
     try {
-      const plan = serializePlan(taskPlan);
       const body = {
-        plan,
-        checkIntervalMinutes: Math.max(5, Number(checkIntervalMinutes ?? taskCheckInterval)),
+        name: taskName.trim() || 'Untitled task',
         workspace: (workspace ?? taskWorkspace).trim() || undefined,
-        autoAcceptPermissions: taskAutoAcceptPermissions,
+        goal: taskGoal.trim(),
       };
-      saveAutoAcceptPref(taskAutoAcceptPermissions);
       if (resolvedSessionId) body.sessionId = resolvedSessionId;
       const response = await fetch('/api/tasks', {
         method: 'POST',
@@ -943,8 +724,8 @@
       const result = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(result.detail || response.statusText);
       selectedTaskId = result.taskId;
-      taskPlan = emptyPlan();
-      taskStepExpanded = new Set();
+      taskName = '';
+      taskGoal = '';
       taskTarget = 'workspace';
       selectedSessionId = '';
       openTaskDrawer(result.taskId);
@@ -1236,14 +1017,6 @@
         <span class={`pill ${state.server.ok ? 'pill-ok' : 'pill-fail'}`}>
           <span class="pill-dot"></span>{state.server.ok ? 'Healthy' : 'Unavailable'}
         </span>
-        {#if state.staleBusy?.sessionIds?.length}
-          <span
-            class="pill pill-warn"
-            title={`Stuck for >{state.staleBusy.thresholdChecks} checks: ${state.staleBusy.sessionIds.join(', ')}`}
-          >
-            <span class="pill-dot"></span>{state.staleBusy.sessionIds.length} stuck
-          </span>
-        {/if}
       </div>
       <div class="main-tabs">
         <button type="button" class="main-tab" class:active={mainView === 'dashboard'} onclick={() => (mainView = 'dashboard')}>Dashboard</button>
@@ -1481,26 +1254,12 @@
       {:else if state.tasks.length === 0 && state.sessions.length === 0}
         <div class="empty">No sessions or tasks yet. Use New Task in the Actions panel.</div>
       {:else}
-        <div class="config-summary" role="group" aria-label="Active input and notification channels">
-          <div class="config-summary-item" class:config-summary-off={!inboxSummary.enabled}>
-            <span class="config-summary-icon" class:config-summary-icon-on={inboxSummary.enabled}><Icon name="inbox" size={14} /></span>
-            <div class="config-summary-text">
-              <span class="config-summary-label">Inbox <span class="config-summary-status">{inboxSummary.enabled ? 'on' : 'off'}</span></span>
-              <span class="config-summary-detail">{inboxSummary.detail}</span>
-            </div>
-          </div>
+        <div class="config-summary" role="group" aria-label="Notification channels">
           <div class="config-summary-item" class:config-summary-off={!webhookSummary.enabled}>
             <span class="config-summary-icon" class:config-summary-icon-on={webhookSummary.enabled}><Icon name="webhook" size={14} /></span>
             <div class="config-summary-text">
               <span class="config-summary-label">Webhook <span class="config-summary-status">{webhookSummary.enabled ? 'on' : 'off'}</span></span>
               <span class="config-summary-detail">{webhookSummary.detail}</span>
-            </div>
-          </div>
-          <div class="config-summary-item" class:config-summary-off={!fileNotifySummary.enabled}>
-            <span class="config-summary-icon" class:config-summary-icon-on={fileNotifySummary.enabled}><Icon name="file-text" size={14} /></span>
-            <div class="config-summary-text">
-              <span class="config-summary-label">File notify <span class="config-summary-status">{fileNotifySummary.enabled ? 'on' : 'off'}</span></span>
-              <span class="config-summary-detail">{fileNotifySummary.detail}</span>
             </div>
           </div>
         </div>
@@ -1511,8 +1270,6 @@
               <thead>
                 <tr>
                   <th>Name</th>
-                  <th>Interval</th>
-                  <th>Steps</th>
                   <th>Workspace</th>
                   <th>Status</th>
                   <th>Checked</th>
@@ -1522,8 +1279,6 @@
                 {#each activeTasks as task}
                   <tr class:highlight={drawerTaskId === task.id} onclick={() => openTaskDrawer(task.id)}>
                     <td><span class="task-title" title={task.name}>{task.name}</span></td>
-                    <td class="mono">{taskIntervalLabel(task)}</td>
-                    <td class="mono">{stepProgressLabel(task)}</td>
                     <td class="mono">{shortPath(task.workspace)}</td>
                     <td><span class={`pill ${statusClass(task.status)}`}><span class="pill-dot"></span>{task.status}</span></td>
                     <td class="mono">{updatedAgeSeconds(task) ?? '—'}</td>
@@ -1539,13 +1294,12 @@
             <div class="group-head"><span class="group-title">Archived Tasks</span><span class="group-count">{archivedTasks.length}</span></div>
             <table>
               <thead>
-                <tr><th>Name</th><th>Interval</th><th>Workspace</th><th>Status</th><th></th></tr>
+                <tr><th>Name</th><th>Workspace</th><th>Status</th><th></th></tr>
               </thead>
               <tbody>
                 {#each archivedTasks as task}
                   <tr class:highlight={drawerTaskId === task.id} onclick={() => openTaskDrawer(task.id)}>
                     <td><span class="task-title" title={task.name}>{task.name}</span></td>
-                    <td class="mono">{taskIntervalLabel(task)}</td>
                     <td class="mono">{shortPath(task.workspace)}</td>
                     <td><span class={`pill ${statusClass(task.status)}`}><span class="pill-dot"></span>{task.status}</span></td>
                     <td>
@@ -1624,235 +1378,59 @@
     </div>
     <div class="dispatch-body">
       <div class="task-composer">
-        <section class="composer-section">
-          <div class="segmented segmented-compact composer-target-tabs">
-            <button type="button" class:active={taskTarget === 'workspace'} onclick={() => (taskTarget = 'workspace')}>Workspace</button>
-            <button type="button" class:active={taskTarget === 'session'} onclick={() => (taskTarget = 'session')}>Session</button>
-          </div>
-          {#if taskTarget === 'workspace'}
-            <div class="path-row composer-path">
-              <input id="task-workspace" class="mono" type="text" bind:value={taskWorkspace} placeholder="/path/to/project" />
-              <button class="btn btn-ghost btn-sm path-pick" type="button" title="Choose folder" aria-label="Choose folder" onclick={() => openFolderBrowser(taskWorkspace)}>
-                <Icon name="folder" size={14} />
-              </button>
-            </div>
-            {#if state.recentWorkspaces.length}
-              <div class="composer-recents">
-                {#each state.recentWorkspaces.slice(0, 3) as workspace, idx}
-                  <button
-                    type="button"
-                    class="template-chip"
-                    class:active={taskWorkspace === workspace}
-                    title={workspace}
-                    data-index={String(idx + 1).padStart(2, '0')}
-                    onclick={() => selectRecentWorkspace(workspace)}
-                  >{projectName(workspace)}</button>
-                {/each}
-              </div>
-            {/if}
-          {:else}
-            <div class="composer-session-fields">
-              <select id="task-project" value={selectedProjectDir} onchange={(e) => selectProjectDir(e.currentTarget.value)}>
-                {#each sortedDirectories as dir}
-                  {@const sessions = state.sessionsByDirectory[dir]}
-                  {#if sessions?.length}
-                    <option value={dir}>{projectDirLabel(dir)}</option>
-                  {/if}
-                {/each}
-              </select>
-              <select id="task-session" bind:value={selectedSessionId} disabled={sessionsInSelectedProject.length === 0}>
-                {#each sessionsInSelectedProject as session}
-                  <option value={session.id}>{sessionOptionLabel(session)}</option>
-                {/each}
-              </select>
-            </div>
-          {/if}
-        </section>
-
-        <div class="composer-divider" role="separator"></div>
-
-        <section class="composer-section composer-plan">
-          <input
-            id="plan-title"
-            class="composer-title"
-            type="text"
-            bind:value={taskPlan.title}
-            placeholder="Title (optional — list label; falls back to goal)"
-          />
-          <textarea
-            id="plan-goal"
-            class="composer-goal"
-            bind:value={taskPlan.goal}
-            placeholder="Goal — what should be true when done?"
-            rows="3"
-          ></textarea>
-
-          <div class="composer-steps-head">
-            <span class="composer-label">Steps</span>
-            <button class="btn btn-ghost btn-sm composer-add" type="button" onclick={addPlanStep}>
-              <Icon name="plus" size={12} />
-              Add
+        <div class="segmented segmented-compact composer-target-tabs">
+          <button type="button" class:active={taskTarget === 'workspace'} onclick={() => (taskTarget = 'workspace')}>Workspace</button>
+          <button type="button" class:active={taskTarget === 'session'} onclick={() => (taskTarget = 'session')}>Session</button>
+        </div>
+        {#if taskTarget === 'workspace'}
+          <div class="path-row composer-path">
+            <input id="task-workspace" class="mono" type="text" bind:value={taskWorkspace} placeholder="/path/to/project" />
+            <button class="btn btn-ghost btn-sm path-pick" type="button" title="Choose folder" aria-label="Choose folder" onclick={() => openFolderBrowser(taskWorkspace)}>
+              <Icon name="folder" size={14} />
             </button>
           </div>
-
-          <div class="task-step-list">
-            {#each taskPlan.steps as step, i}
-              {@const expanded = taskStepExpanded.has(i)}
-              {@const checkCount = stepAcceptanceFilledCount(step)}
-              <div class="task-step" class:expanded>
-                <div class="task-step-main">
-                  <span class="task-step-num">{String(i + 1).padStart(2, '0')}.</span>
-                  <input
-                    type="text"
-                    bind:value={taskPlan.steps[i].title}
-                    placeholder="Describe this step"
-                    aria-label="Step {i + 1} description"
-                  />
-                  <button
-                    type="button"
-                    class="task-step-checks-btn"
-                    class:active={expanded || checkCount > 0}
-                    aria-expanded={expanded}
-                    onclick={() => (expanded ? toggleStepExpanded(i) : openStepChecks(i))}
-                  >
-                    {#if checkCount}
-                      {checkCount} check{checkCount === 1 ? '' : 's'}
-                    {:else}
-                      Checks
-                    {/if}
-                    <Icon name="chevron-down" size={10} class={`task-step-chevron${expanded ? ' open' : ''}`} />
-                  </button>
-                  <button class="list-remove" type="button" aria-label="Remove step" onclick={() => removePlanStep(i)}>
-                    <Icon name="x" size={12} />
-                  </button>
-                </div>
-                {#if expanded}
-                  <div class="task-step-checks">
-                    {#each step.acceptance as _item, j}
-                      <div class="task-check-row">
-                        <Icon name="check" size={10} class="task-check-icon" />
-                        <input
-                          type="text"
-                          bind:value={taskPlan.steps[i].acceptance[j]}
-                          placeholder="Done when…"
-                          aria-label="Step {i + 1} check {j + 1}"
-                        />
-                        <button
-                          class="list-remove"
-                          type="button"
-                          aria-label="Remove check"
-                          onclick={() => removeStepAcceptance(i, j)}
-                        ><Icon name="x" size={12} /></button>
-                      </div>
-                    {/each}
-                    <button class="btn btn-ghost btn-sm task-check-add" type="button" onclick={() => addStepAcceptance(i)}>
-                      <Icon name="plus" size={10} />
-                      Add check
-                    </button>
-                  </div>
+        {:else}
+          <div class="composer-session-fields">
+            <select id="task-project" value={selectedProjectDir} onchange={(e) => selectProjectDir(e.currentTarget.value)}>
+              {#each sortedDirectories as dir}
+                {@const sessions = state.sessionsByDirectory[dir]}
+                {#if sessions?.length}
+                  <option value={dir}>{projectDirLabel(dir)}</option>
                 {/if}
-              </div>
-            {/each}
-          </div>
-
-          <details class="task-global-checks">
-            <summary>
-              Final checks
-              {#if taskPlan.globalAcceptance.filter((item) => item.trim()).length}
-                <span class="composer-badge">{taskPlan.globalAcceptance.filter((item) => item.trim()).length}</span>
-              {/if}
-            </summary>
-            <div class="task-global-body">
-              {#each taskPlan.globalAcceptance as _item, i}
-                <div class="task-check-row">
-                  <Icon name="check" size={10} class="task-check-icon" />
-                  <input
-                    type="text"
-                    bind:value={taskPlan.globalAcceptance[i]}
-                    placeholder="Whole-task check (e.g. pytest passes)"
-                  />
-                  <button
-                    class="list-remove"
-                    type="button"
-                    aria-label="Remove check"
-                    onclick={() => removeGlobalAcceptance(i)}
-                  ><Icon name="x" size={12} /></button>
-                </div>
               {/each}
-              <button class="btn btn-ghost btn-sm task-check-add" type="button" onclick={addGlobalAcceptance}>
-                <Icon name="plus" size={10} />
-                Add check
-              </button>
-            </div>
-          </details>
-        </section>
-      </div>
-    </div>
-    <div class="dispatch-foot">
-      <div class="composer-auto-accept">
-        <label class="composer-auto-accept-toggle">
-          <input
-            type="checkbox"
-            class="composer-auto-accept-input"
-            bind:checked={taskAutoAcceptPermissions}
-            onchange={() => saveAutoAcceptPref(taskAutoAcceptPermissions)}
-          />
-          <span class="composer-auto-accept-box" aria-hidden="true">
-            {#if taskAutoAcceptPermissions}
-              <Icon name="check" size={10} class="composer-auto-accept-check" />
-            {/if}
-          </span>
-          <span class="composer-auto-accept-title">Auto-accept permissions</span>
-        </label>
-        <button
-          type="button"
-          class="composer-help"
-          aria-label="Auto-accept permissions: approve each request once for this session (same as OpenCode Desktop). Turn off to review manually."
-        >
-          ?
-          <span class="composer-help-tip" role="tooltip">
-            Approve each request once for this session (same as OpenCode Desktop). Turn off to review manually.
-          </span>
-        </button>
-      </div>
-      <div class="composer-foot-interval">
-        <span class="composer-label">Watch</span>
-        <div class="interval-presets composer-interval">
-          {#each intervalPresets as preset}
-            <button
-              type="button"
-              class="interval-preset"
-              class:active={Number(taskCheckInterval) === preset.minutes}
-              onclick={() => (taskCheckInterval = preset.minutes)}
-            >{preset.label}</button>
-          {/each}
-          <button
-            type="button"
-            class="interval-preset"
-            class:active={taskIntervalIsCustom}
-            onclick={() => {
-              if (!taskIntervalIsCustom) taskCheckInterval = 20;
-            }}
-          >Custom</button>
-        </div>
-        {#if taskIntervalIsCustom}
-          <div class="interval-custom composer-interval-custom">
-            <input id="task-interval" type="number" min="5" max="120" bind:value={taskCheckInterval} aria-label="Custom interval minutes" />
-            <span class="interval-unit">min</span>
+            </select>
+            <select id="task-session" bind:value={selectedSessionId} disabled={sessionsInSelectedProject.length === 0}>
+              {#each sessionsInSelectedProject as session}
+                <option value={session.id}>{sessionOptionLabel(session)}</option>
+              {/each}
+            </select>
           </div>
         {/if}
+
+        <input
+          id="task-name"
+          class="composer-name"
+          type="text"
+          bind:value={taskName}
+          placeholder="Name (optional)"
+        />
+        <textarea
+          id="task-goal"
+          class="composer-goal"
+          bind:value={taskGoal}
+          placeholder="Goal — what should the agent accomplish?"
+          rows="3"
+        ></textarea>
+
+        <button
+          class="btn btn-primary btn-block"
+          type="button"
+          disabled={taskSubmitting || !taskGoal.trim()}
+          onclick={() => createTask()}
+        >
+          {taskSubmitting ? 'Starting…' : 'Start Task'}
+        </button>
       </div>
-      {#if taskStartSummary}
-        <div class="composer-summary dim mono">{taskStartSummary}</div>
-      {/if}
-      <button
-        class="btn btn-primary btn-block"
-        type="button"
-        disabled={taskSubmitting || !planStepCount(taskPlan)}
-        onclick={() => createTask()}
-      >
-        {taskSubmitting ? 'Starting…' : 'Start Task'}
-      </button>
       {#if taskError}
         <div class="error">{taskError}</div>
       {/if}
@@ -1873,8 +1451,6 @@
             {#if statusShowsDot(drawerTask.status)}<span class="pill-dot"></span>{/if}
             {drawerTask.status}
           </span>
-          <span class="mono dim">{taskIntervalLabel(drawerTask)}</span>
-          <span class="dim">· {stepProgressLabel(drawerTask)} steps</span>
         </div>
       </div>
       <div class="drawer-head-actions">
@@ -1884,7 +1460,6 @@
     <div class="drawer-tabs">
       <button class:active={drawerTaskTab === 'overview'} type="button" onclick={() => (drawerTaskTab = 'overview')}>Overview</button>
       <button class:active={drawerTaskTab === 'log'} type="button" onclick={() => (drawerTaskTab = 'log')}>Check log</button>
-      <button class:active={drawerTaskTab === 'spec'} type="button" onclick={() => (drawerTaskTab = 'spec')}>Spec</button>
     </div>
     <div class="drawer-body">
       {#if drawerTaskTab === 'overview'}
@@ -1904,12 +1479,6 @@
           <div class="permission-task-hint">
             <span class="dim">Waiting on OpenCode permission.</span>
             <button class="btn btn-ghost btn-sm" type="button" onclick={() => viewTaskSession(drawerTask)}>Open session</button>
-          </div>
-        {/if}
-        {#if drawerTask.spec?.auto_accept_permissions === false}
-          <div class="meta-row">
-            <div class="meta-label">Auto-accept</div>
-            <div class="meta-value">Off for this task</div>
           </div>
         {/if}
         <div class="meta-row">
@@ -1932,39 +1501,6 @@
           </ol>
         {:else}
           <div class="empty">No check log entries.</div>
-        {/if}
-      {:else}
-        {#if drawerTask.spec?.goal}
-          <div class="meta-row"><div class="meta-label">Goal</div><div class="meta-value">{drawerTask.spec.goal}</div></div>
-        {/if}
-        {#if drawerTask.spec?.steps?.length}
-          <div class="meta-label" style="margin-top: 12px;">Steps</div>
-          <ol class="spec-steps">
-            {#each drawerTask.spec.steps as step, i}
-              {@const stepAcc = drawerTask.spec.step_acceptance?.[i] || []}
-              <li>
-                {i + 1}. {step}
-                {#if stepAcc.length}
-                  <ul class="spec-sublist">
-                    {#each stepAcc as item}
-                      <li>{item}</li>
-                    {/each}
-                  </ul>
-                {/if}
-              </li>
-            {/each}
-          </ol>
-        {/if}
-        {#if drawerTask.spec?.acceptance?.length}
-          <div class="meta-label" style="margin-top: 12px;">Global acceptance</div>
-          <ul class="spec-steps">
-            {#each drawerTask.spec.acceptance as item}
-              <li>{item}</li>
-            {/each}
-          </ul>
-        {/if}
-        {#if !drawerTask.spec?.goal && !drawerTask.spec?.steps?.length && !drawerTask.spec?.acceptance?.length}
-          <div class="empty">Prompt-only task — no structured spec yet.</div>
         {/if}
       {/if}
     </div>

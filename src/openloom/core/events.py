@@ -18,8 +18,6 @@ class EventType(Enum):
     TASK_UPDATED = auto()
     TASK_COMPLETED = auto()
     TASK_FAILED = auto()
-    LOG_LINE = auto()
-    SESSION_STALE_BUSY = auto()
 
 
 @dataclass(frozen=True)

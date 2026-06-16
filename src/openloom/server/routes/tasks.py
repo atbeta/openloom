@@ -43,6 +43,30 @@ async def event_stream(store: Any, web_sink: Any):
     return EventSourceResponse(generate())
 
 
+async def abort_task(client: Any, harness: Any, task_id: str) -> dict[str, Any]:
+    """POST /api/tasks/{id}/abort — release any in-flight agent
+    loop on the task's session via OpenCode's POST /session/{id}/abort.
+
+    Used by webhook handlers to break a stuck session before sending
+    a follow-up prompt. Returns 404 if the task or session is gone.
+    """
+    task = harness.get_task(task_id)
+    if not task:
+        return {"error": "task not found"}
+    session_id = str(task.get("active_session_id") or "").strip()
+    if not session_id:
+        return {"error": "task has no active session"}
+    if not hasattr(client, "abort_session"):
+        return {"error": "client does not support abort"}
+    ok = await client.abort_session(session_id)
+    return {
+        "ok": True,
+        "taskId": task_id,
+        "sessionId": session_id,
+        "aborted": bool(ok),
+    }
+
+
 async def full_state(
     client: Any,
     store: Any,
@@ -66,20 +90,12 @@ async def full_state(
 
     if health.ok:
         try:
-            # We need the FULL list (including archived) here because
-            # the dashboard reports an "archived" section. monitor.sessions
-            # has already filtered archived out via is_visible_session,
-            # so we must call list_sessions() again for the all-seeds list.
             sessions = await client.list_sessions()
             session_status = monitor.status
         except Exception as exc:  # noqa: BLE001
             session_error = str(exc)
             sessions = []
 
-    # The archived flag lives in time.archived on OpenCode 1.16.2; the
-    # earlier version of this code looked at the top-level "archived"
-    # key which the server never returns — that was the source of the
-    # "archived count is always 0" bug.
     try:
         archived_sessions = [s for s in sessions if is_archived_session(s)]
     except Exception:
@@ -122,28 +138,11 @@ async def full_state(
         except Exception:
             permissions = []
 
-    inbox: dict[str, Any] = {"enabled": False}
-    if settings.inbox_dir is not None:
-        inbox = {
-            "enabled": True,
-            "directory": str(settings.inbox_dir),
-            "filename": settings.inbox_filename,
-            "pollIntervalSeconds": settings.inbox_poll_interval_seconds,
-            "defaultSession": settings.inbox_default_session or None,
-        }
-
     webhooks: list[dict[str, Any]] = []
     for wh in settings.notify.webhooks:
         webhooks.append({
             "url": wh.url,
             "events": sorted(wh.events),
-        })
-    files: list[dict[str, Any]] = []
-    for fe in settings.notify.files:
-        files.append({
-            "directory": str(fe.directory),
-            "prefix": fe.prefix,
-            "events": sorted(fe.events),
         })
 
     return {
@@ -165,15 +164,10 @@ async def full_state(
         "sessionStatus": session_status,
         "sessionError": session_error,
         "permissions": permissions,
-        "inbox": inbox,
-        "notify": {"webhooks": webhooks, "files": files},
+        "notify": {"webhooks": webhooks},
         "metrics": _status_counts(tasks, session_status),
         "usage": aggregate_usage_periods(sessions, now=time.time()),
         "now": time.time(),
-        "staleBusy": {
-            "thresholdChecks": settings.stale_busy_checks,
-            "sessionIds": list(getattr(monitor, "stale_busy_sessions", []) or []),
-        },
     }
 
 
@@ -208,86 +202,4 @@ def _status_counts(tasks: list[dict[str, Any]], session_status: dict[str, Any]) 
         "sessionsBusy": sessions_busy,
         "sessionsIdle": sessions_idle,
         "sessionsRetry": sessions_retry,
-    }
-
-
-def inbox_trigger(
-    harness: Any,
-    parse_spec: Any,
-    body: dict[str, Any],
-) -> dict[str, Any]:
-    """Webhook entry point — accept a markdown body (or a file path) and
-    create a task the same way the file-watcher would. Designed for
-    callers that cannot write into the synced inbox directory
-    (phone, CI, etc.).
-
-    Body shape:
-      {"text": "# title\\n..."}   raw markdown, parsed by the same
-                                   parser the watcher uses.
-      {"path": "/abs/file.md"}    read this file from disk and parse
-                                   it; equivalent to the watcher
-                                   consuming it.
-      {"sessionId": "ses_..."}    attach the new task to an existing
-                                   OpenCode session id; the task will
-                                   be appended to that session's
-                                   transcript instead of starting a
-                                   new one. Markdown frontmatter
-                                   ``session: <id>`` takes precedence
-                                   when both are present.
-      {"defaultWorkspace": "..."} fallback workspace for markdown
-                                   payloads that omit the
-                                   ``workspace:`` frontmatter.
-
-    Returns the same shape as the file-watcher's tick: task id + the
-    parsed spec name. Errors return 400 with a message.
-    """
-    from openloom.runtime.prompts import parse_task_spec
-
-    default_workspace = (body.get("default_workspace") or body.get("defaultWorkspace") or "").strip()
-    body_session_id = (body.get("session_id") or body.get("sessionId") or "").strip()
-
-    text = body.get("text")
-    path = body.get("path")
-    if text is None and path is None:
-        raise ValueError("body must include 'text' or 'path'")
-    if text is not None and path is not None:
-        raise ValueError("body must include exactly one of 'text' or 'path'")
-
-    if path is not None:
-        from pathlib import Path as _P
-
-        p = _P(str(path))
-        if not p.is_file():
-            raise ValueError(f"path not found: {path}")
-        text = p.read_text(encoding="utf-8")
-
-    assert text is not None  # for type checkers
-    try:
-        spec = parse_task_spec(text, "markdown")
-    except Exception as exc:  # noqa: BLE001
-        raise ValueError(f"Invalid markdown task spec: {exc}") from exc
-
-    if not spec.workspace:
-        spec.workspace = default_workspace
-    if not spec.workspace:
-        raise ValueError("workspace is required (set 'workspace:' in markdown, or pass default_workspace)")
-
-    session_id = body_session_id
-    if not session_id:
-        from openloom.runtime.prompts import extract_session_id_from_markdown
-
-        session_id = extract_session_id_from_markdown(text)
-
-    task_id = harness.add_task(
-        spec,
-        active_session_id=session_id or None,
-        session_ids=[session_id] if session_id else None,
-    )
-    return {
-        "ok": True,
-        "taskId": task_id,
-        "name": spec.name,
-        "status": "pending",
-        "source": "path" if path is not None else "text",
-        "sessionId": session_id or None,
     }
