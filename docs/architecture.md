@@ -28,7 +28,7 @@ The four layers enforce the following invariants (enforced by `tests/contracts/t
 4. The harness does not call sink methods directly. State changes go through the store; the store emits an event; sinks subscribe to the bus.
 5. API routes only read the store. The event bus pushes notifications, not data.
 6. The base `pip install openloom` has only `httpx` + `pyyaml` as runtime deps. `fastapi`, `uvicorn`, etc. are all extras (`[ui]` / `[server]`).
-7. Composition is done by decorator (e.g. `register_sink`, `register_checker`), not by inheritance.
+7. Composition is done by decorator (`@register_sink("name")`), not by inheritance. The 0.12 registry only knows about sinks — there is no checker / source registry, since the manual-mode checker was the only thing that needed those.
 
 ## The state-change invariant
 

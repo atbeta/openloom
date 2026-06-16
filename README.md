@@ -105,7 +105,7 @@ curl -X POST http://127.0.0.1:55413/api/tasks \
   }'
 ```
 
-The response is `{ok, taskId, status, name, workspace, sessionId}`. The task is now `pending`; on the next harness tick (within 5 seconds) it transitions to `running` with an OpenCode session id bound to it.
+The response is `{ok, taskId, status, name, workspace, sessionId}`. The task is now `pending`; on the next harness tick (within 8 seconds) it transitions to `running` with an OpenCode session id bound to it.
 
 If you have a webhook configured, the next events arrive on it:
 
@@ -130,10 +130,13 @@ If you have a webhook configured, the next events arrive on it:
 # 1. Get the stuck task's id from the webhook or dashboard
 TASK=task_abc123
 
-# 2. Abort the in-flight agent loop
+# 2. Abort the in-flight agent loop on the task's session
 curl -X POST http://127.0.0.1:55413/api/tasks/$TASK/abort
 
-# 3. Send a follow-up prompt as a new task bound to the same session
+# 3. Archive the old task so it stops showing in the active list
+curl -X POST http://127.0.0.1:55413/api/tasks/$TASK/archive
+
+# 4. Send a follow-up prompt as a new task bound to the same session
 curl -X POST http://127.0.0.1:55413/api/tasks \
   -H 'Content-Type: application/json' \
   -d '{
@@ -143,7 +146,7 @@ curl -X POST http://127.0.0.1:55413/api/tasks \
   }'
 ```
 
-The new task replaces the old one as the session's observer; the old task is auto-archived. `TASK_CREATED` for the new task carries `replaced_task_ids: ["task_abc123"]` so the dashboard / webhook can show the chain.
+The new task binds to the same OpenCode session; the old task is archived. The session itself keeps its full transcript — both the old and new task can be opened in the dashboard and read each other's messages.
 
 ## API surface
 

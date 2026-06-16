@@ -24,7 +24,7 @@ Webhooks receive a POST per event. Default timeout is 3 seconds; failures are lo
 | `TASK_CREATED` | A new task was added to the store (POST /api/tasks). |
 | `TASK_STARTED` | The harness bound the task to an OpenCode session and sent the first user turn. |
 | `TASK_UPDATED` | A periodic poll observed a status / progress / message change. Fires roughly every 8 seconds while a task is running. |
-| `TASK_COMPLETED` | The agent reported `TASK COMPLETE` and the harness has confirmed no further work is pending. |
+| `TASK_COMPLETED` | The agent's last assistant turn contained the marker text `TASK COMPLETE` (case-insensitive). The harness does not interpret completion any other way — agents that never emit the marker stay in `running`. |
 | `TASK_FAILED` | Unrecoverable error (budget exceeded, session lost, harness check raised). |
 
 The full lifecycle of a single task is therefore `TASK_CREATED → TASK_STARTED → N × TASK_UPDATED → TASK_COMPLETED` (or `TASK_FAILED`).
@@ -81,9 +81,9 @@ The list is the right size to fit in a Slack or Discord webhook payload even whe
 
 The field is best-effort: harness events emitted from the periodic check path include it; rare paths that do not have access to the message log (the manual `pause_task` / `complete_task` API calls, the catch-all `tick()` exception handler) omit it. The shape is always a JSON list, possibly empty.
 
-### `data.active_session_id`
+### `data.active_session_id` (or `data.session_id` on `TASK_STARTED` / `TASK_CREATED`)
 
-Always present on `TASK_UPDATED` / `TASK_COMPLETED` / `TASK_FAILED` / `TASK_STARTED`. `null` for a task with no session binding (rare — the dashboard will only show one of those for completed tasks).
+Always present on `TASK_UPDATED` / `TASK_COMPLETED`. The TASK_STARTED event uses the key name `data.session_id` (because it carries the fresh session id at creation time, not the post-bind id). Omitted on `TASK_FAILED` (the harness only knows the task failed; it has not had a chance to read the session id from the store). `null` for a task with no session binding (rare — the dashboard will only show one of those for completed tasks).
 
 ## Detecting a stuck session
 

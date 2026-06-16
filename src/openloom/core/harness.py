@@ -49,8 +49,6 @@ class HarnessRunner:
         prompts: PromptsPort,
         status: StatusPort,
         *,
-        max_task_tokens: int | None = None,
-        max_task_runtime_minutes: int | None = None,
         notify_recent_messages: int = 3,
     ) -> None:
         self.opencode: OpenCodePort = opencode
@@ -58,8 +56,6 @@ class HarnessRunner:
         self.store: StorePort = store
         self.prompts: PromptsPort = prompts
         self.status: StatusPort = status
-        self.max_task_tokens = max_task_tokens
-        self.max_task_runtime_minutes = max_task_runtime_minutes
         self.notify_recent_messages = max(1, int(notify_recent_messages))
 
     def _task_name(self, task_id: str) -> str:

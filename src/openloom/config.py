@@ -15,8 +15,6 @@ class Settings:
     database_path: Path
     ui_host: str = "127.0.0.1"
     ui_port: int = 55413
-    max_task_tokens: int | None = None
-    max_task_runtime_minutes: int | None = None
     notify: NotifyConfig = field(default_factory=NotifyConfig.empty)
     notify_recent_messages: int = 3
 
@@ -35,8 +33,6 @@ class Settings:
             database_path=database,
             ui_host=os.getenv("OPENLOOM_UI_HOST", "127.0.0.1"),
             ui_port=int(os.getenv("OPENLOOM_UI_PORT", "55413")),
-            max_task_tokens=_optional_env_int("OPENLOOM_MAX_TASK_TOKENS"),
-            max_task_runtime_minutes=_optional_env_int("OPENLOOM_MAX_TASK_RUNTIME_MINUTES"),
             notify=NotifyConfig.from_env(),
             notify_recent_messages=(
                 _optional_env_int("OPENLOOM_NOTIFY_RECENT_MESSAGES") or 3

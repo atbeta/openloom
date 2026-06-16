@@ -24,14 +24,9 @@ The CLI flags `--host` and `--port` override `OPENLOOM_UI_HOST` and `OPENLOOM_UI
 
 ## Task budgets
 
-Soft caps applied at the harness level (per task, from creation time).
+0.12 does **not** enforce token or runtime caps server-side. The harness polls every 8 seconds and emits `TASK_UPDATED` until the agent reports `TASK COMPLETE` (or you `POST /api/tasks/{id}/abort` to break a stuck loop). A long-running but progressing task is left alone; the webhook consumer decides what counts as "too long".
 
-| Variable | Default | Purpose |
-|----------|---------|---------|
-| `OPENLOOM_MAX_TASK_TOKENS` | *(unset)* | Token cap derived from OpenCode's `/session/stats` endpoint. A task that exceeds this is marked failed at its next check. |
-| `OPENLOOM_MAX_TASK_RUNTIME_MINUTES` | *(unset)* | Wall-clock minutes since the task was created. A task that exceeds this is marked failed at its next check. |
-
-Both checks are evaluated at the same cadence as the harness's poll loop (default 8 s). A long-running but progressing task is **not** interrupted mid-tool; the harness only fails the task on the next check.
+If you need a hard cap, do it on the webhook side: count `TASK_UPDATED` events with no new `recent_activity[*].completed_at` advance for N consecutive checks, then call `abort` from your handler.
 
 ## Notifications
 
@@ -60,5 +55,7 @@ The following env vars are gone in 0.12 and will be silently ignored if set:
 | `OPENLOOM_NOTIFY_FILE_DIRS` | File notification sink removed. Webhook is the only delivery path. |
 | `OPENLOOM_NOTIFY_FILE_PREFIX` | Same. |
 | `OPENLOOM_NOTIFY_FILE_EVENTS` | Same. |
+| `OPENLOOM_MAX_TASK_TOKENS` | Token budget was defined in 0.11 but never enforced server-side. Removed to avoid suggesting a feature that did not exist. |
+| `OPENLOOM_MAX_TASK_RUNTIME_MINUTES` | Same. |
 
 If you are migrating from 0.11, drop these from your deployment scripts.
