@@ -308,12 +308,3 @@ def _message_is_aborted(info: dict[str, Any]) -> bool:
         return True
     message = str(error.get("message", "")).lower()
     return "abort" in message or "cancel" in message or "stopped" in message
-
-
-def session_total_tokens(session: dict[str, Any]) -> int:
-    """Sum all model buckets reported in a session's ``tokens`` block.
-    Used by ``HarnessRunner`` to enforce ``max_tokens`` budgets."""
-    from .telemetry import parse_session_tokens
-
-    tokens = parse_session_tokens(session)
-    return int(sum(tokens.values()))

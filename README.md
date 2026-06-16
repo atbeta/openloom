@@ -185,7 +185,7 @@ levels/
   notify/  WebhookSink + NotifyConfig
   server/  SessionMonitor, WebSink, ConsoleSink, serve
 server/    FastAPI app + routes + static UI ([ui] extra)
-docs/      Detailed guides (configuration, inbox, notifications, architecture)
+docs/      Detailed guides (configuration, notifications, architecture)
 tests/     contracts/ holds the architecture-enforcement tests
 ```
 

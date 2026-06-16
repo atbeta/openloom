@@ -105,9 +105,8 @@ class PromptsPort(Protocol):
         self, messages: list[dict[str, Any]],
     ) -> bool: ...
     def recent_assistant_activity(
-        self, messages: list[dict[str, Any]], *, n: int = ...,
+        self, messages: list[dict[str, Any]], *, n: int,
     ) -> list[dict[str, Any]]: ...
-    def session_total_tokens(self, session: dict[str, Any]) -> int: ...
 
 
 # ---------------------------------------------------------------------------
