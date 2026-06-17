@@ -68,6 +68,9 @@
   let taskTarget = $state('workspace');
   let selectedProjectDir = $state('');
   let selectedSessionId = $state('');
+  // One-shot guard: only auto-pick a default session once per mount.
+  // Plain let (not $state) — no other code needs to react to it.
+  let autoSessionPicked = false;
   let drawerMessages = $state([]);
   let drawerDiff = $state([]);
   let drawerLoadedAt = $state(0);
@@ -181,10 +184,10 @@
   );
 
   $effect(() => {
-    if (_autoSessionPicked) return;
+    if (autoSessionPicked) return;
     if (selectedSessionId) return;
     if (state.sessions.length === 0) return;
-    _autoSessionPicked = true;
+    autoSessionPicked = true;
     const first = state.sessions[0];
     selectedProjectDir = first.directory || '(unknown)';
     selectedSessionId = first.id;
