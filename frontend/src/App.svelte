@@ -71,6 +71,14 @@
   // One-shot guard: only auto-pick a default session once per mount.
   // Plain let (not $state) — no other code needs to react to it.
   let autoSessionPicked = false;
+
+  let collapsedDirs = $state(new Set());
+
+  let drawerSessionId = $state('');
+  let drawerTab = $state('messages');
+  let drawerLoading = $state(false);
+  let drawerRefreshing = $state(false);
+  let drawerError = $state('');
   let drawerMessages = $state([]);
   let drawerDiff = $state([]);
   let drawerLoadedAt = $state(0);
