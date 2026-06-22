@@ -41,6 +41,7 @@ def _walk(rel: str) -> list[Path]:
         "openloom.core.registry",
         "openloom.core.sink",
         "openloom.core.store",
+        "openloom.core.webhook_types",
     ],
 )
 def test_core_does_not_import_levels_or_server(module: str) -> None:

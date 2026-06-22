@@ -19,6 +19,8 @@ class WebhookEntry:
     events: frozenset[str] = field(default_factory=frozenset)
     timeout_seconds: float = 3.0
     headers: dict[str, str] = field(default_factory=dict)
+    signing_secret: str = ""
+    max_retries: int = 3
 
 
 @dataclass(frozen=True)
@@ -52,6 +54,8 @@ class NotifyConfig:
                 events=_coerce_event_filter(entry.get("events")),
                 timeout_seconds=float(entry.get("timeout_seconds", 3.0)),
                 headers={str(k): str(v) for k, v in (entry.get("headers") or {}).items()},
+                signing_secret=str(entry.get("signing_secret") or ""),
+                max_retries=int(entry.get("max_retries", 3)),
             ))
 
         return cls(webhooks=webhooks)
@@ -67,6 +71,8 @@ class NotifyConfig:
                 events=_coerce_event_filter(
                     os.getenv("OPENLOOM_NOTIFY_WEBHOOK_EVENTS", "*"),
                 ),
+                signing_secret=os.getenv("OPENLOOM_NOTIFY_WEBHOOK_SECRET", ""),
+                max_retries=_optional_int(os.getenv("OPENLOOM_NOTIFY_WEBHOOK_MAX_RETRIES", "3"), 3),
             ))
 
         return cls(webhooks=webhooks)
@@ -74,6 +80,13 @@ class NotifyConfig:
 
 def _split_env(raw: str) -> list[str]:
     return [item.strip() for item in raw.split(",") if item.strip()]
+
+
+def _optional_int(raw: str, default: int) -> int:
+    try:
+        return int(raw)
+    except (ValueError, TypeError):
+        return default
 
 
 def _coerce_event_filter(value: Any) -> frozenset[str]:

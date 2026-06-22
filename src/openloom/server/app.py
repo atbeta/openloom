@@ -45,6 +45,7 @@ def create_app(
 
     from .routes import sessions as session_routes
     from .routes import tasks as task_routes
+    from .routes import webhooks as webhook_routes
 
     def _require_harness() -> Any:
         if harness is None:
@@ -170,6 +171,33 @@ def create_app(
     @app.post("/api/tasks/{task_id}/complete")
     async def complete(task_id: str):
         return _run_task_command(_require_harness().complete_task, task_id)
+
+    @app.get("/api/webhooks/sources")
+    async def list_webhook_sources():
+        return webhook_routes.available_sources()
+
+    @app.post("/api/webhooks/{source}")
+    async def inbound_webhook(source: str, req: Request):
+        """Accept an inbound webhook from an external system.
+
+        Routes the payload through the registered ``SourceParser``
+        for *source*, then creates a harness task from the result.
+        """
+        _require_harness()
+        raw_headers = {k: v for k, v in req.headers.items()}
+        body = await req.json()
+        try:
+            return await webhook_routes.handle_webhook(
+                source,
+                headers=raw_headers,
+                body=body,
+                harness=harness,
+                recent=recent,
+            )
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from None
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @app.get("/api/events")
     async def sse_events():

@@ -84,6 +84,11 @@ async def run_serve(
     n_webhooks = len(settings.notify.webhooks)
     if n_webhooks:
         print(f"  notify:   {n_webhooks} webhook(s)")
+
+    from openloom.core.registry import list_sources
+    sources = list_sources()
+    if sources:
+        print(f"  sources:  {', '.join(sources)}")
     print()
 
     config = uvicorn.Config(

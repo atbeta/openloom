@@ -3,25 +3,21 @@ from __future__ import annotations
 from openloom.core.sink import Sink
 
 from .config import NotifyConfig
-from .webhook import WebhookSink
+from .inbound import GenericSource, process_inbound_event
+from .webhook import WebhookSink, verify_signature
 
 __all__ = [
     "NotifyConfig",
     "WebhookSink",
+    "GenericSource",
     "build_sinks",
+    "process_inbound_event",
+    "verify_signature",
 ]
 
 
 def build_sinks(config: NotifyConfig | None) -> list[Sink]:
-    """Build a list of webhook sinks from the resolved config.
-
-    The previous version of this function also produced ``FileSink``
-    entries (one JSON file per event written to a directory).
-    0.12 removes the file sink entirely — webhook is the only
-    delivery path. The function signature is unchanged so a
-    caller that has been updated to the new ``NotifyConfig``
-    shape can still be wired by name.
-    """
+    """Build a list of webhook sinks from the resolved config."""
     if config is None:
         return []
     sinks: list[Sink] = []
@@ -31,5 +27,7 @@ def build_sinks(config: NotifyConfig | None) -> list[Sink]:
             events=wh.events,
             timeout_seconds=wh.timeout_seconds,
             headers=wh.headers,
+            signing_secret=wh.signing_secret,
+            max_retries=wh.max_retries,
         ))
     return sinks
