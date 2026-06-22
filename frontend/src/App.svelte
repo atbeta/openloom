@@ -73,6 +73,13 @@
   let autoSessionPicked = false;
 
   let collapsedDirs = $state(new Set());
+  let collapsedDirsInitialized = false;
+  $effect(() => {
+    if (collapsedDirsInitialized) return;
+    if (sortedDirectories.length === 0) return;
+    collapsedDirsInitialized = true;
+    collapsedDirs = new Set(sortedDirectories);
+  });
 
   let drawerSessionId = $state('');
   let drawerTab = $state('messages');
