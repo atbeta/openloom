@@ -925,7 +925,7 @@ tr.highlight td {
   min-width: 0;
   overflow-x: hidden;
   overflow-y: auto;
-  padding: 0;
+  padding: 14px 18px;
   display: flex;
   flex-direction: column;
   gap: 10px;
