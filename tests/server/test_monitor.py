@@ -1,4 +1,5 @@
-"""SessionMonitor contract tests — covers the ghost-busy purge.
+"""SessionMonitor contract tests — covers status map purging and the
+silent-busy probe.
 
 The OpenCode server can leave stale ``{type: busy}`` entries in its
 ``/session/status`` map after the corresponding session is removed from
@@ -9,10 +10,19 @@ server is restarted).
 ``SessionMonitor.refresh()`` is the defensive layer: it must drop
 status / busy-hold entries for any session that no longer appears in
 ``list_sessions()``.
+
+Silent-busy probe (0.13+): OpenCode 1.16.x sometimes drops a session
+from the status map mid-tool (the upstream entry vanishes while the
+agent is still working). The monitor compensates by probing
+recently-updated sessions that are absent from the status map: it
+calls ``messages()`` and asks ``messages_indicate_busy`` whether the
+latest assistant turn is still open. Probing is rate-limited
+per-session and batched per refresh.
 """
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 import pytest
@@ -37,14 +47,17 @@ class _FakeClient:
         return dict(self._status)
 
 
-def _session(sid: str, updated: float = 1.0) -> dict[str, Any]:
+def _session(sid: str, updated: float = 1.0, time_block: dict[str, Any] | None = None) -> dict[str, Any]:
     return {
         "id": sid,
         "title": sid,
         "directory": "/tmp",
-        "time": {"created": updated, "updated": updated, "archived": 0},
+        "time": time_block or {"created": updated, "updated": updated, "archived": 0},
         "parentID": None,
     }
+
+
+# ── ghost-busy purge (pre-existing 0.12 contract) ──────────────────────
 
 
 @pytest.mark.asyncio
@@ -67,7 +80,6 @@ async def test_refresh_drops_status_for_deleted_session() -> None:
     )
 
 
-@pytest.mark.asyncio
 @pytest.mark.asyncio
 async def test_status_preserved_for_still_visible_sessions() -> None:
     """The purge is selective — busy sessions that ARE in the list
@@ -117,44 +129,194 @@ async def test_refresh_handles_upstream_error_gracefully() -> None:
     assert monitor.sessions == []
     assert monitor.status == {}
 
+
+# ── silent-busy probe (0.13+) ────────────────────────────────────────────
+
+
+def _busy_message() -> dict[str, Any]:
+    """A message whose assistant turn is still open (no completed time)."""
+    return {
+        "info": {
+            "role": "assistant",
+            "time": {"created": 0},  # no 'completed' key
+            "error": None,
+        },
+        "parts": [],
+    }
+
+
+def _finished_message() -> dict[str, Any]:
+    return {
+        "info": {
+            "role": "assistant",
+            "time": {"created": 0, "completed": 1.0},
+            "error": None,
+        },
+        "parts": [],
+    }
+
+
 @pytest.mark.asyncio
-async def test_refresh_skips_probe_for_old_sessions() -> None:
-    """A session with no status-map entry but old ``updated`` time
-    must NOT be probed every refresh — it would be wasted bandwidth.
-    """
-    class _ProbeClient(_FakeClient):
-        def __init__(self) -> None:
-            super().__init__(
-                sessions=[_session("ses_old", updated=1.0)],
-                status={},
-            )
-            self.probed: list[str] = []
+async def test_absent_recently_updated_session_is_probed_busy() -> None:
+    """A recently-updated session absent from /session/status is
+    probed via messages(); an open assistant turn promotes it to BUSY."""
+    updated = time.time()
+    client = _FakeClient(
+        sessions=[_session("ses_silent", updated=updated)],
+        status={},
+    )
+    client.messages_response = [_busy_message()]
 
-        async def messages(self, session_id: str, limit: int = 20) -> list[dict[str, Any]]:
-            self.probed.append(session_id)
-            return []
+    async def _messages(sid: str, limit: int = 20) -> list[dict[str, Any]]:
+        return client.messages_response
 
-    client = _ProbeClient()
+    client.messages = _messages  # type: ignore[method-assign]
+
     monitor = SessionMonitor(client)
     await monitor.refresh()
-    assert client.probed == []
+
+    assert monitor.status["ses_silent"] == BUSY
+
+
+@pytest.mark.asyncio
+async def test_absent_session_with_finished_message_stays_idle() -> None:
+    """If messages() shows the assistant turn is completed, the absent
+    session is genuinely idle and stays IDLE."""
+    updated = time.time()
+    client = _FakeClient(
+        sessions=[_session("ses_done", updated=updated)],
+        status={},
+    )
+
+    async def _messages(sid: str, limit: int = 20) -> list[dict[str, Any]]:
+        return [_finished_message()]
+
+    client.messages = _messages  # type: ignore[method-assign]
+
+    monitor = SessionMonitor(client)
+    await monitor.refresh()
+
+    assert monitor.status["ses_done"] == IDLE
+
+
+@pytest.mark.asyncio
+async def test_stale_session_is_not_probed() -> None:
+    """A session whose last update is older than the freshness
+    window (5 min by default) is assumed idle — probing it would
+    just waste an upstream call."""
+    stale = time.time() - 600  # 10 minutes ago
+    client = _FakeClient(
+        sessions=[_session("ses_old", updated=stale)],
+        status={},
+    )
+    probe_calls: list[str] = []
+
+    async def _messages(sid: str, limit: int = 20) -> list[dict[str, Any]]:
+        probe_calls.append(sid)
+        return [_busy_message()]
+
+    client.messages = _messages  # type: ignore[method-assign]
+
+    monitor = SessionMonitor(client)
+    await monitor.refresh()
+
+    assert probe_calls == []
+    assert monitor.status["ses_old"] == IDLE
+
+
+@pytest.mark.asyncio
+async def test_probe_is_rate_limited_per_session() -> None:
+    """A session that was probed within the cooldown window is not
+    re-probed on the next refresh."""
+    updated = time.time()
+    client = _FakeClient(
+        sessions=[_session("ses_x", updated=updated)],
+        status={},
+    )
+    probe_calls: list[str] = []
+
+    async def _messages(sid: str, limit: int = 20) -> list[dict[str, Any]]:
+        probe_calls.append(sid)
+        return [_busy_message()]
+
+    client.messages = _messages  # type: ignore[method-assign]
+
+    monitor = SessionMonitor(client)
+    await monitor.refresh()
+    await monitor.refresh()
+
+    assert len(probe_calls) == 1, (
+        f"expected exactly one probe call, got {len(probe_calls)}"
+    )
 
 
 @pytest.mark.asyncio
 async def test_probe_failure_does_not_crash_refresh() -> None:
-    """If messages() throws, the session falls back to IDLE."""
-    class _FailingProbeClient(_FakeClient):
-        def __init__(self) -> None:
-            super().__init__(
-                sessions=[_session("ses_x", updated=100.0)],
-                status={},
-            )
+    """If messages() throws during the probe, the session falls back
+    to IDLE and the refresh continues for other sessions."""
+    updated = time.time()
+    client = _FakeClient(
+        sessions=[
+            _session("ses_broken", updated=updated),
+            _session("ses_ok", updated=updated),
+        ],
+        status={},
+    )
 
-        async def messages(self, session_id: str, limit: int = 20) -> list[dict[str, Any]]:
+    async def _messages(sid: str, limit: int = 20) -> list[dict[str, Any]]:
+        if sid == "ses_broken":
             raise RuntimeError("upstream down")
+        return [_busy_message()]
 
-    monitor = SessionMonitor(_FailingProbeClient())
+    client.messages = _messages  # type: ignore[method-assign]
+
+    monitor = SessionMonitor(client)
     await monitor.refresh()
-    assert monitor.status.get("ses_x", IDLE) == IDLE
+
+    # Broken session falls back to IDLE (no probe succeeded), ok
+    # session is probed and promoted to BUSY.
+    assert monitor.status["ses_broken"] == IDLE
+    assert monitor.status["ses_ok"] == BUSY
 
 
+@pytest.mark.asyncio
+async def test_probe_batch_is_capped() -> None:
+    """Only a bounded number of absent sessions are probed per
+    refresh — the rest fall back to IDLE without an upstream call."""
+    now = time.time()
+    sessions = [
+        _session(f"ses_{i:02d}", updated=now - i) for i in range(10)
+    ]
+    client = _FakeClient(sessions=sessions, status={})
+
+    probe_calls: list[str] = []
+
+    async def _messages(sid: str, limit: int = 20) -> list[dict[str, Any]]:
+        probe_calls.append(sid)
+        return [_busy_message()]
+
+    client.messages = _messages  # type: ignore[method-assign]
+
+    monitor = SessionMonitor(client)
+    await monitor.refresh()
+
+    # The batch cap is hardcoded to 3 in monitor.py; the 3 most
+    # recently updated sessions are probed.
+    assert len(probe_calls) == 3
+    assert probe_calls == ["ses_00", "ses_01", "ses_02"]
+
+
+@pytest.mark.asyncio
+async def test_probed_status_does_not_leak_to_ghost_sessions() -> None:
+    """If a session disappeared from list_sessions but still has a
+    cached probe result, the next refresh must drop it — same
+    purge semantics as upstream-reported status."""
+    visible = [_session("ses_alive", updated=1.0)]
+    client = _FakeClient(visible, {})
+    monitor = SessionMonitor(client)
+    monitor._probed["ses_ghost"] = BUSY
+    monitor._last_probed_at["ses_ghost"] = time.time()
+    await monitor.refresh()
+
+    assert "ses_ghost" not in monitor._probed
+    assert "ses_ghost" not in monitor._last_probed_at
