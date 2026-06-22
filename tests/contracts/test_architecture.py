@@ -27,9 +27,10 @@ def _walk(rel: str) -> list[Path]:
     return [p for p in root.rglob("*.py") if p.is_file()]
 
 
-# The set of core/ modules that must not import from levels/ or
-# server/. The list is the source of truth — `test_architecture.py`
-# would otherwise drift when modules are added or removed.
+# The set of core/ modules that must not import from levels/,
+# runtime/, or server/. The list is the source of truth —
+# `test_architecture.py` would otherwise drift when modules are
+# added or removed.
 @pytest.mark.parametrize(
     "module",
     [
@@ -44,7 +45,7 @@ def _walk(rel: str) -> list[Path]:
         "openloom.core.webhook_types",
     ],
 )
-def test_core_does_not_import_levels_or_server(module: str) -> None:
+def test_core_does_not_import_levels_runtime_or_server(module: str) -> None:
     """PLAN §11.1: core/ must not import levels/, runtime/, server/."""
     mod = importlib.import_module(module)
     mod_file = Path(mod.__file__ or "")
@@ -53,6 +54,7 @@ def test_core_does_not_import_levels_or_server(module: str) -> None:
     forbidden = {
         "openloom.levels",
         "openloom.levels.server",
+        "openloom.runtime",
         "openloom.server",
     }
     bad = [name for name in mod.__dict__ if name in forbidden]

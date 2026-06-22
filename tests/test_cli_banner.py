@@ -80,16 +80,3 @@ def test_is_verbose_env_var(
     assert _is_verbose(argparse.Namespace(verbose=False)) is False
     monkeypatch.delenv("OPENLOOM_VERBOSE", raising=False)
     assert _is_verbose(argparse.Namespace(verbose=False)) is False
-
-
-def test_banner_verbose_lists_no_inbox_when_unset(
-    capsys: pytest.CaptureFixture, tmp_path: object, monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    db = tmp_path / "openloom.sqlite3"  # type: ignore[operator]
-    monkeypatch.setenv("OPENLOOM_DATABASE", str(db))
-    monkeypatch.delenv("OPENLOOM_INBOX_DIR", raising=False)
-    settings = Settings.from_env()
-    _print_banner(_args(verbose=True), settings)
-    out = capsys.readouterr().out
-    # No inbox block when OPENLOOM_INBOX_DIR is unset
-    assert "inbox" not in out.split("env:")[0]  # nothing in the top facts

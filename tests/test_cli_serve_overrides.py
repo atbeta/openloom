@@ -3,9 +3,9 @@
 The override helper patches only ``ui_host`` / ``ui_port`` on the
 ``Settings`` object. Earlier versions rebuilt a fresh ``Settings``
 with only a handful of fields and silently dropped
-``notify.webhooks`` and the ``inbox_dir`` env var, breaking the
-dashboard. The fix is one line in ``_apply_serve_overrides``; the
-test is the contract that guards it.
+``notify.webhooks``, breaking the dashboard. The fix is one line
+in ``_apply_serve_overrides``; the test is the contract that
+guards it.
 """
 
 from __future__ import annotations

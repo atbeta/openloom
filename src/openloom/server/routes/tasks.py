@@ -86,15 +86,15 @@ async def full_state(
     tasks = store.list_tasks()
     sessions: list[dict[str, Any]] = []
     session_status: dict[str, str] = {}
-    session_error: str | None = None
 
     if health.ok:
         try:
             sessions = await client.list_sessions()
             session_status = monitor.status
-        except Exception as exc:  # noqa: BLE001
-            session_error = str(exc)
+        except Exception:  # noqa: BLE001
             sessions = []
+
+
 
     try:
         archived_sessions = [s for s in sessions if is_archived_session(s)]
@@ -148,8 +148,7 @@ async def full_state(
     return {
         "server": {
             "ok": health.ok, "message": health.message,
-            "statusCode": health.status_code, "url": settings.opencode_url,
-            "username": settings.opencode_username,
+            "url": settings.opencode_url,
         },
         "recentWorkspaces": recent_workspaces,
         "tasks": tasks,
@@ -162,7 +161,6 @@ async def full_state(
             for s in archived_sessions
         ],
         "sessionStatus": session_status,
-        "sessionError": session_error,
         "permissions": permissions,
         "notify": {"webhooks": webhooks},
         "metrics": _status_counts(tasks, session_status),

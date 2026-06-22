@@ -422,9 +422,9 @@ class OpenCodeClient:
         """Abort any in-flight agent loop on a session.
 
         Returns ``True`` if the upstream acknowledged the abort, ``False``
-        if the session was already idle / unknown. The harness uses
-        this to release a stuck session before sending a follow-up
-        prompt via the inbox ``abort: true`` frontmatter.
+        if the session was already idle / unknown. The dashboard uses
+        this from ``POST /api/tasks/{id}/abort`` to release a stuck
+        agent before the user sends a follow-up prompt.
         """
         try:
             await self._request("POST", f"/session/{session_id}/abort")
