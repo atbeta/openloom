@@ -42,13 +42,17 @@ async def handle_webhook(
 
     workspace = event.workspace.strip()
     name = (event.name or "").strip() or "Webhook task"
+    session_id = event.session_id.strip()
+
+    if not session_id and not workspace:
+        raise ValueError("either workspace or sessionId is required")
 
     from openloom.runtime.prompts import TaskSpec
 
     spec = TaskSpec(name=name, workspace=workspace, goal=goal)
-    task_id = harness.add_task(spec)
+    task_id = harness.add_task(spec, active_session_id=session_id or None)
 
-    if recent is not None and workspace:
+    if recent is not None and workspace and not session_id:
         recent.record(workspace)
 
     return {
@@ -57,6 +61,7 @@ async def handle_webhook(
         "status": "pending",
         "name": spec.name,
         "workspace": spec.workspace,
+        "sessionId": session_id or None,
         "source": event.source,
     }
 

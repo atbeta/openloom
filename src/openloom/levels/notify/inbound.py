@@ -46,6 +46,7 @@ class GenericSource(SourceParser):
             name=str(body.get("name") or body.get("title") or ""),
             workspace=str(body.get("workspace") or body.get("cwd") or ""),
             goal=goal,
+            session_id=str(body.get("sessionId") or body.get("session_id") or ""),
             metadata=dict(body.get("metadata") or {}),
         )
 

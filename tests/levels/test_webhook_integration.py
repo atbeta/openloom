@@ -138,6 +138,27 @@ def test_generic_source_parses_full_payload() -> None:
     assert result.metadata == {"branch": "main"}
 
 
+def test_generic_source_parses_session_id_camel_case() -> None:
+    src = GenericSource()
+    result = src.parse({}, {"goal": "x", "sessionId": "ses_abc"})
+    assert result is not None
+    assert result.session_id == "ses_abc"
+
+
+def test_generic_source_parses_session_id_snake_case() -> None:
+    src = GenericSource()
+    result = src.parse({}, {"goal": "x", "session_id": "ses_xyz"})
+    assert result is not None
+    assert result.session_id == "ses_xyz"
+
+
+def test_generic_source_session_id_defaults_to_empty() -> None:
+    src = GenericSource()
+    result = src.parse({}, {"goal": "x"})
+    assert result is not None
+    assert result.session_id == ""
+
+
 def test_generic_source_returns_none_on_empty_body() -> None:
     src = GenericSource()
     assert src.parse({}, {}) is None

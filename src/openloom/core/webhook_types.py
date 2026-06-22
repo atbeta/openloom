@@ -35,6 +35,7 @@ class WebhookInboundEvent:
     name: str = ""
     workspace: str = ""
     goal: str = ""
+    session_id: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
 
 
