@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import importlib
 from pathlib import Path
 from typing import Any
+
+import pytest
 
 from openloom.core.events import EventBus, EventType
 from openloom.core.harness import HarnessRunner
@@ -10,7 +13,24 @@ from openloom.runtime import prompts, session_status
 
 
 class _OpencodeStub:
-    pass
+    """Bare-bones OpenCodePort stub.
+
+    Records every ``send_prompt_async`` call so bootstrap-framing
+    tests can assert what was actually sent to the agent.
+    """
+
+    def __init__(self) -> None:
+        self.sent_prompts: list[str] = []
+
+    async def send_prompt_async(
+        self,
+        *,
+        session_id: str,
+        prompt: str,
+        agent: str | None = None,
+        directory: str | None = None,
+    ) -> None:
+        self.sent_prompts.append(prompt)
 
 
 def _harness(
@@ -59,6 +79,73 @@ def test_manual_complete_emits_updated_and_completed(tmp_path: Path) -> None:
     types = [e.type for e in events]
     assert EventType.TASK_UPDATED in types
     assert EventType.TASK_COMPLETED in types
+
+
+# ── bootstrap framing ──────────────────────────────────────────────────
+
+
+class _FullOpencodeStub(_OpencodeStub):
+    """OpenCodePort stub with session-listing and creation methods
+    needed for the ``_start_task`` path (which sends the bootstrap
+    prompt to a freshly-created session)."""
+
+    async def list_sessions(self) -> list[dict[str, Any]]:
+        return []
+
+    async def create_session(
+        self,
+        *,
+        cwd: str | None = None,
+        title: str | None = None,
+    ) -> dict[str, Any]:
+        return {"id": "sess_1"}
+
+
+async def test_start_task_appends_bootstrap_framing(tmp_path: Path) -> None:
+    """When ``_start_task`` runs (i.e. a pending task gets its first
+    check), the prompt sent to OpenCode must contain the user's
+    goal followed by the short completion-protocol suffix. The
+    framing tells the agent to emit ``TASK COMPLETE`` so the harness
+    can detect completion via the marker — not just via idle timeout."""
+    store = Store(tmp_path / "store.sqlite3")
+    bus = EventBus()
+    opencode = _FullOpencodeStub()
+    harness = HarnessRunner(
+        opencode=opencode, bus=bus, store=store,
+        prompts=prompts, status=session_status,
+    )
+
+    task = new_task_record(
+        task_id="task_bootstrap",
+        name="demo",
+        spec={"name": "demo", "workspace": "/tmp", "goal": "deploy the app"},
+        workspace="/tmp",
+        active_session_id="",
+    )
+    store.create_task(task)
+
+    await harness._check_task(task)
+
+    assert len(opencode.sent_prompts) == 1
+    prompt = opencode.sent_prompts[0]
+    # The user's goal comes first, unchanged.
+    assert prompt.startswith("deploy the app")
+    # The framing is appended and mentions the exact marker.
+    assert "TASK COMPLETE" in prompt
+    # The framing is short — not a verbose multi-paragraph prompt.
+    suffix = prompt[len("deploy the app"):]
+    assert len(suffix) < 200
+
+
+async def test_start_task_no_double_framing_for_empty_goal(tmp_path: Path) -> None:
+    """If somehow the goal is empty (shouldn't happen — guarded one
+    level up) ``wrap_bootstrap`` must still produce *something*
+    rather than crash, so the agent still gets the protocol note."""
+    from openloom.runtime.prompts import wrap_bootstrap
+
+    framed = wrap_bootstrap("")
+    assert "TASK COMPLETE" in framed
+    assert framed.strip()  # not empty
 
 
 # ── idle_completes_task ────────────────────────────────────────────────
@@ -378,5 +465,57 @@ def test_settings_auto_accept_permissions_defaults_to_true() -> None:
         database_path=Path("/tmp/x.sqlite3"),
     )
     assert s.auto_accept_permissions is True
+
+
+# ── CHECK_INTERVAL_SECONDS env override ────────────────────────────────
+
+
+def test_check_interval_default_is_30_seconds() -> None:
+    """With no env var set, ``CHECK_INTERVAL_SECONDS`` defaults to
+    30 — a deliberate raise from the old 8 s. 30 s is friendlier
+    on OpenCode when many tasks run in parallel and gives the
+    connector's status-file throttle enough headroom that a phone
+    only sees meaningful transitions rather than every tick."""
+    import os
+
+    # Clear the env var so we observe the default.
+    os.environ.pop("OPENLOOM_CHECK_INTERVAL_SECONDS", None)
+    import openloom.core.harness as h
+    importlib.reload(h)
+    try:
+        assert h.CHECK_INTERVAL_SECONDS == 30
+    finally:
+        # Restore (in case the test-runner order matters).
+        importlib.reload(h)
+
+
+def test_check_interval_env_override(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Setting ``OPENLOOM_CHECK_INTERVAL_SECONDS`` to a custom value
+    makes the harness pick it up on module import."""
+    import openloom.core.harness as h
+
+    monkeypatch.setenv("OPENLOOM_CHECK_INTERVAL_SECONDS", "12")
+    importlib.reload(h)
+    try:
+        assert h.CHECK_INTERVAL_SECONDS == 12
+    finally:
+        monkeypatch.delenv("OPENLOOM_CHECK_INTERVAL_SECONDS", raising=False)
+        importlib.reload(h)
+
+
+def test_check_interval_clamps_out_of_range(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Values <= 0 clamp to 1; values > 3600 clamp to 3600; non-int
+    values fall back to the default. Operators who fat-finger the
+    env var don't get a stuck or runaway poller."""
+    import openloom.core.harness as h
+
+    for raw, expected in [("0", 1), ("-5", 1), ("99999", 3600), ("abc", 30)]:
+        monkeypatch.setenv("OPENLOOM_CHECK_INTERVAL_SECONDS", raw)
+        importlib.reload(h)
+        assert h.CHECK_INTERVAL_SECONDS == expected, (
+            f"raw={raw!r} expected {expected}, got {h.CHECK_INTERVAL_SECONDS}"
+        )
+    monkeypatch.delenv("OPENLOOM_CHECK_INTERVAL_SECONDS", raising=False)
+    importlib.reload(h)
 
 

@@ -20,6 +20,7 @@ on their behalf any more.
 from __future__ import annotations
 
 import logging
+import os
 import time
 import uuid
 from typing import Any
@@ -35,9 +36,27 @@ from .store import new_task_record
 
 _logger = logging.getLogger("openloom.harness")
 
-# Hardcoded — 0.12 dropped the env-var knob. 8 s is a reasonable
-# trade-off between UI freshness and OpenCode server load.
-CHECK_INTERVAL_SECONDS = 8
+# Polling cadence. OpenLoom emits TASK_UPDATED every CHECK_INTERVAL_S
+# seconds per task, asks OpenCode for the task's session status + the
+# last few messages. Default 30 s is a good trade-off for remote /
+# unattended use: cheap on OpenCode, fast enough that a phone watching
+# the connector's status files sees progress within one polling window.
+# Override with OPENLOOM_CHECK_INTERVAL_SECONDS; clamped to [1, 3600].
+DEFAULT_CHECK_INTERVAL_SECONDS = 30
+
+
+def _resolve_check_interval() -> int:
+    raw = os.getenv("OPENLOOM_CHECK_INTERVAL_SECONDS", "").strip()
+    if not raw:
+        return DEFAULT_CHECK_INTERVAL_SECONDS
+    try:
+        value = int(raw)
+    except ValueError:
+        return DEFAULT_CHECK_INTERVAL_SECONDS
+    return max(1, min(3600, value))
+
+
+CHECK_INTERVAL_SECONDS = _resolve_check_interval()
 
 
 class HarnessRunner:
@@ -407,7 +426,7 @@ class HarnessRunner:
 
         await self.opencode.send_prompt_async(
             session_id=session_id,
-            prompt=spec.goal,
+            prompt=self.prompts.wrap_bootstrap(spec.goal),
             directory=spec.workspace or None,
         )
 

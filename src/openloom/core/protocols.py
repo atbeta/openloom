@@ -112,6 +112,7 @@ class PromptsPort(Protocol):
     def recent_assistant_activity(
         self, messages: list[dict[str, Any]], *, n: int,
     ) -> list[dict[str, Any]]: ...
+    def wrap_bootstrap(self, goal: str) -> str: ...
 
 
 # ---------------------------------------------------------------------------

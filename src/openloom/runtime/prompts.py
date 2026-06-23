@@ -251,7 +251,61 @@ def recent_assistant_activity(
     return out
 
 
+# Suffix appended to every task prompt so the agent knows the
+# completion protocol. The harness waits for a "TASK COMPLETE"
+# marker (or treats idle as complete, depending on
+# OPENLOOM_IDLE_COMPLETES_TASK); the agent only reliably emits
+# that marker if it is told about it. Keep this short — it lives
+# in every prompt and the model has limited attention to spend
+# on system-level instructions.
+TASK_COMPLETE_MARKER = "TASK COMPLETE"
+
+
+_BOOTSTRAP_FRAMING = (
+    "\n\n---\n"
+    "When you have finished the task and verified the result is correct, "
+    f"include a line containing exactly: {TASK_COMPLETE_MARKER}\n"
+    "Do not include that line until the work is actually done."
+)
+
+
+def wrap_bootstrap(goal: str) -> str:
+    """Append the completion-protocol suffix to a task's goal.
+
+    The user's goal comes first and unchanged. The framing is short,
+    unambiguous, and mentions nothing else the agent doesn't already
+    know (no boilerplate about OpenLoom, harness, etc.) — verbose
+    framing proved brittle in 0.11.3 where the agent would paraphrase
+    the protocol and miss the exact marker.
+    """
+    goal = (goal or "").rstrip()
+    if not goal:
+        return _BOOTSTRAP_FRAMING.lstrip()
+    return goal + _BOOTSTRAP_FRAMING
+
+
 def permission_waiting_summary(pending: list[dict[str, Any]]) -> str:
+    """Render a one-line summary of the OpenCode pending-permission
+    list, used by ``OpenCodeClient.resolve_session_permissions`` to
+    surface a short reason on the task's check log when something is
+    blocking on operator approval.
+    """
+    if not pending:
+        return "Waiting for permission approval"
+    first = pending[0]
+    tool = str(first.get("permission") or "tool")
+    patterns = first.get("patterns") or []
+    hint = str(patterns[0]) if patterns else ""
+    base = f"Permission required: {tool}"
+    if hint:
+        base += f" ({hint})"
+    extra = len(pending) - 1
+    if extra > 0:
+        base += f" (+{extra} more)"
+    return base
+
+
+
     """Render a one-line summary of the OpenCode pending-permission
     list, used by ``OpenCodeClient.resolve_session_permissions`` to
     decide between status=waiting and status=running."""
