@@ -57,7 +57,17 @@ class WebhookSink(Sink):
         self._url = url
         self._events: frozenset[str] = events or frozenset({"*"})
         self._owns_client = client is None
-        self._client = client or httpx.Client(timeout=timeout_seconds)
+        # ``trust_env=False`` makes httpx ignore HTTP_PROXY / HTTPS_PROXY /
+        # ALL_PROXY and the OS proxy config. Without it, a system-wide proxy
+        # (corporate VPN, Clash, mitmproxy, etc.) hijacks requests to
+        # 127.0.0.1 and the connector ends up receiving the webhook through
+        # someone else's gateway — which either times out or returns a
+        # generic "Content Filter - Access Denied" HTML page. See also
+        # openloom-connector commit 62f432b for the matching hardening on
+        # the inbound side.
+        self._client = client or httpx.Client(
+            timeout=timeout_seconds, trust_env=False,
+        )
         self._extra_headers: dict[str, str] = dict(headers or {})
         self._signing_secret = signing_secret
         self._max_retries = max(0, max_retries)
