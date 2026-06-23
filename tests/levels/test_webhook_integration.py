@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import time
 from typing import Any
 
 import httpx
@@ -32,6 +33,25 @@ def _event(
         store_version=store_version,
         data={"status": "completed", "summary": "ok"},
     )
+
+
+def _wait_for_call_count(route, expected: int, timeout: float = 2.0) -> None:
+    """Wait until the respx route has been called *expected* times.
+
+    ``WebhookSink`` delivers events on a background worker thread, so the
+    route's call counter is updated asynchronously. Tests that assert on
+    ``route.call_count`` after ``sink.on_event`` need to wait for the
+    worker to actually issue the HTTP requests before reading it.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if route.call_count >= expected:
+            return
+        time.sleep(0.02)
+    raise AssertionError(
+        f"webhook route called {route.call_count}/{expected} times within {timeout}s"
+    )
+
 
 
 # ── Inbound: WebhookInboundEvent ──────────────────────────────────────────
@@ -198,6 +218,7 @@ def test_webhook_signing_when_secret_set() -> None:
         signing_secret="my-secret",
     )
     sink.on_event(_event())
+    _wait_for_call_count(route, 1)
     sink.close()
 
     request = route.calls.last.request
@@ -216,6 +237,7 @@ def test_webhook_no_signing_when_no_secret() -> None:
     )
     sink = WebhookSink(url="https://example.com/hook")
     sink.on_event(_event())
+    _wait_for_call_count(route, 1)
     sink.close()
 
     request = route.calls.last.request
@@ -257,6 +279,7 @@ def test_webhook_retries_on_5xx() -> None:
         max_retries=2,
     )
     sink.on_event(_event())
+    _wait_for_call_count(route, 3, timeout=10.0)
     sink.close()
     assert route.call_count == 3
 
@@ -274,6 +297,7 @@ def test_webhook_stops_retrying_on_success() -> None:
         max_retries=3,
     )
     sink.on_event(_event())
+    _wait_for_call_count(route, 2)
     sink.close()
     assert route.call_count == 2
 
@@ -288,6 +312,7 @@ def test_webhook_zero_retries_no_extra_attempts() -> None:
         max_retries=0,
     )
     sink.on_event(_event())
+    _wait_for_call_count(route, 1)
     sink.close()
     assert route.call_count == 1
 
@@ -302,6 +327,7 @@ def test_webhook_payload_has_schema_version() -> None:
     )
     sink = WebhookSink(url="https://example.com/hook")
     sink.on_event(_event())
+    _wait_for_call_count(route, 1)
     sink.close()
 
     body = json.loads(route.calls.last.request.content)

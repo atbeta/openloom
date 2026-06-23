@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 
 import httpx
 import pytest
@@ -104,6 +105,36 @@ def test_config_from_env_parses_csv_urls(
     assert [w.url for w in cfg.webhooks] == ["https://a", "https://b"]
 
 
+@respx.mock
+def test_webhook_on_event_does_not_block_event_bus() -> None:
+    """Regression test: ``on_event`` must return immediately even when
+    the webhook target times out. The previous implementation did the
+    HTTP POST + retry backoff synchronously, which blocked the OpenLoom
+    event bus (and therefore the FastAPI dashboard / SSE stream) for up
+    to ``(1 + max_retries) * timeout_seconds`` per event. With the
+    background-worker implementation, ``on_event`` returns in milliseconds
+    regardless of how slow or unreachable the webhook target is.
+    """
+    respx.post("https://example.com/hook").mock(
+        side_effect=httpx.ConnectError("nope"),
+    )
+    sink = WebhookSink(
+        url="https://example.com/hook",
+        max_retries=3,
+    )
+    # If ``on_event`` blocked, this would take at least ~21 seconds
+    # (4 attempts * 3s default timeout + 1s + 4s + 16s backoff). Assert it
+    # returns in well under that bound.
+    start = time.monotonic()
+    sink.on_event(_event())
+    elapsed = time.monotonic() - start
+    assert elapsed < 1.0, (
+        f"on_event blocked for {elapsed:.2f}s — webhook delivery is not "
+        "offloaded to a background worker"
+    )
+    sink.close(timeout=10.0)
+
+
 # --- WebhookSink ---
 
 
@@ -117,6 +148,7 @@ def test_webhook_posts_event_payload() -> None:
         events=frozenset({"TASK_COMPLETED"}),
     )
     sink.on_event(_event())
+    _wait_for_route(route, timeout=2.0)
     sink.close()
 
     assert route.called
@@ -127,6 +159,25 @@ def test_webhook_posts_event_payload() -> None:
     assert body["task_id"] == "t-1"
     assert body["store_version"] == 3
     assert body["data"] == {"status": "completed", "summary": "ok"}
+
+
+def _wait_for_route(route, timeout: float = 2.0) -> None:
+    """Wait until the respx route has been called or timeout.
+
+    ``WebhookSink`` delivers events on a background worker thread, so the
+    route's call counter is updated asynchronously. Tests that assert on
+    ``route.called`` after ``sink.on_event`` need to wait for the worker
+    to actually issue the HTTP request before reading it.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if route.called:
+            return
+        time.sleep(0.02)
+    raise AssertionError(
+        f"webhook route not called within {timeout}s "
+        f"(worker thread may be stuck or respx mock not engaged)"
+    )
 
 
 @respx.mock
@@ -151,6 +202,7 @@ def test_webhook_wildcard_matches_everything() -> None:
     sink = WebhookSink(url="https://example.com/hook", events=frozenset({"*"}))
     sink.on_event(_event(EventType.TASK_CREATED))
     sink.on_event(_event(EventType.TASK_UPDATED))
+    _wait_for_route(route, timeout=2.0)
     sink.close()
     assert route.call_count == 2
 
@@ -177,12 +229,14 @@ def test_webhook_logs_but_does_not_raise_on_network_error() -> None:
 
 def test_webhook_sends_custom_headers() -> None:
     captured: list[httpx.Request] = None  # type: ignore[assignment]
+    captured_event = threading.Event()
     lock = threading.Lock()
 
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal captured
         with lock:
             captured = request
+        captured_event.set()
         return httpx.Response(200)
 
     transport = httpx.MockTransport(handler)
@@ -193,6 +247,9 @@ def test_webhook_sends_custom_headers() -> None:
         client=client,
     )
     sink.on_event(_event())
+    assert captured_event.wait(timeout=2.0), (
+        "webhook handler never invoked — worker thread may be stuck"
+    )
     sink.close()
     assert captured is not None
     assert captured.headers["Authorization"] == "Bearer t"
