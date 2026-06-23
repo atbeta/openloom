@@ -385,7 +385,7 @@ class OpenCodeClient:
 
         try:
             data = await self._request_json("POST", f"/session?{query}", json=body)
-        except httpx.HTTPStatusError:
+        except OpenCodeError:
             fallback_body = dict(body)
             fallback_body["directory"] = cwd
             data = await self._request_json("POST", "/session", json=fallback_body)
@@ -438,8 +438,8 @@ class OpenCodeClient:
                 params=params,
             )
             return
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code not in (404, 405):
+        except OpenCodeError as exc:
+            if exc.status_code not in (404, 405):
                 raise
 
         await self._request(
@@ -461,8 +461,8 @@ class OpenCodeClient:
         try:
             await self._request("POST", f"/session/{session_id}/abort")
             return True
-        except httpx.HTTPStatusError as exc:
-            if exc.response.status_code in (404, 409):
+        except OpenCodeError as exc:
+            if exc.status_code in (404, 409):
                 return False
             raise
 
