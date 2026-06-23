@@ -41,19 +41,51 @@ _logger = logging.getLogger("openloom.harness")
 # last few messages. Default 30 s is a good trade-off for remote /
 # unattended use: cheap on OpenCode, fast enough that a phone watching
 # the connector's status files sees progress within one polling window.
-# Override with OPENLOOM_CHECK_INTERVAL_SECONDS; clamped to [1, 3600].
+#
+# Resolution: env var OPENLOOM_CHECK_INTERVAL_SECONDS > config file
+# harness.check_interval_seconds > DEFAULT. Clamped to [1, 3600].
 DEFAULT_CHECK_INTERVAL_SECONDS = 30
 
 
 def _resolve_check_interval() -> int:
-    raw = os.getenv("OPENLOOM_CHECK_INTERVAL_SECONDS", "").strip()
-    if not raw:
-        return DEFAULT_CHECK_INTERVAL_SECONDS
-    try:
-        value = int(raw)
-    except ValueError:
-        return DEFAULT_CHECK_INTERVAL_SECONDS
-    return max(1, min(3600, value))
+    file_value: int | None = None
+    cfg_path = _find_config_file_for_harness()
+    if cfg_path is not None:
+        try:
+            import yaml
+            raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+            if isinstance(raw, dict):
+                harness = raw.get("harness")
+                if isinstance(harness, dict):
+                    raw_value = harness.get("check_interval_seconds")
+                    if isinstance(raw_value, int):
+                        file_value = raw_value
+                    elif isinstance(raw_value, str):
+                        try:
+                            file_value = int(raw_value)
+                        except ValueError:
+                            file_value = None
+        except (OSError, ValueError):
+            file_value = None
+
+    env_raw = os.getenv("OPENLOOM_CHECK_INTERVAL_SECONDS", "").strip()
+    chosen: int
+    if env_raw:
+        try:
+            chosen = int(env_raw)
+        except ValueError:
+            chosen = DEFAULT_CHECK_INTERVAL_SECONDS
+    elif file_value is not None:
+        chosen = file_value
+    else:
+        chosen = DEFAULT_CHECK_INTERVAL_SECONDS
+    return max(1, min(3600, chosen))
+
+
+def _find_config_file_for_harness():
+    """Lazy import to avoid pulling settings_source at module top level."""
+    from openloom.core.settings_source import find_config_file
+    return find_config_file()
 
 
 CHECK_INTERVAL_SECONDS = _resolve_check_interval()

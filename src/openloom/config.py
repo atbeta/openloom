@@ -3,8 +3,10 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from openloom.core.notify_config import NotifyConfig
+from openloom.core.settings_source import load_config_file
 
 
 @dataclass(frozen=True)
@@ -42,45 +44,135 @@ class Settings:
 
     @classmethod
     def from_env(cls) -> Settings:
-        database = Path(
-            os.getenv("OPENLOOM_DATABASE", ".openloom/openloom.sqlite3"),
-        ).expanduser()
+        """Build Settings from YAML config file + OPENLOOM_* env vars.
+
+        Order of precedence (highest wins):
+        1. ``OPENLOOM_*`` environment variables
+        2. ``./openloom.yaml`` (project-level)
+        3. ``~/.openloom/config.yaml`` (user-level)
+        4. Built-in defaults
+
+        OpenCode's password stays env-only — see ``from_sources``
+        for why. The notify webhook block falls through to env vars
+        when the YAML file has no ``notify`` section.
+        """
+        cfg = load_config_file()
+        return cls.from_sources(cfg)
+
+    @classmethod
+    def from_sources(cls, file_cfg: dict[str, Any]) -> Settings:
+        """Build Settings from a parsed YAML config dict + the
+        current process environment. Public for tests; production
+        callers use ``from_env`` which loads the file first.
+
+        ``opencode.password`` is *intentionally* not read from
+        ``file_cfg`` — secrets don't belong in YAML files, even
+        user-private ones. Password comes from
+        ``OPENLOOM_OPENCODE_PASSWORD`` only.
+        """
+        opencode = file_cfg.get("opencode") if isinstance(file_cfg, dict) else None
+        opencode = opencode if isinstance(opencode, dict) else {}
+
+        ui = file_cfg.get("ui") if isinstance(file_cfg, dict) else None
+        ui = ui if isinstance(ui, dict) else {}
+
+        harness = file_cfg.get("harness") if isinstance(file_cfg, dict) else None
+        harness = harness if isinstance(harness, dict) else {}
+
+        database_raw = file_cfg.get("database") if isinstance(file_cfg, dict) else None
+        # Env var wins over the file; falls back to file, then default.
+        env_database = os.getenv("OPENLOOM_DATABASE", "").strip()
+        if env_database:
+            database_raw = env_database
+        database = Path(str(database_raw) if database_raw else ".openloom/openloom.sqlite3")
+        database = database.expanduser()
         if not database.is_absolute():
             database = Path.cwd() / database
 
+        notify_raw = (
+            file_cfg.get("notify") if isinstance(file_cfg, dict) else None
+        )
+
         return cls(
-            opencode_url=os.getenv("OPENLOOM_OPENCODE_URL", "http://127.0.0.1:4096").rstrip("/"),
-            opencode_username=os.getenv("OPENLOOM_OPENCODE_USERNAME", "opencode"),
+            opencode_url=_str_or_env(
+                opencode.get("url"),
+                "OPENLOOM_OPENCODE_URL",
+                default="http://127.0.0.1:4096",
+            ).rstrip("/"),
+            opencode_username=_str_or_env(
+                opencode.get("username"),
+                "OPENLOOM_OPENCODE_USERNAME",
+                default="opencode",
+            ),
+            # Password is env-only; the YAML file is never consulted.
             opencode_password=os.getenv("OPENLOOM_OPENCODE_PASSWORD", ""),
             database_path=database,
-            ui_host=os.getenv("OPENLOOM_UI_HOST", "127.0.0.1"),
-            ui_port=int(os.getenv("OPENLOOM_UI_PORT", "55413")),
-            notify=NotifyConfig.from_env(),
-            notify_recent_messages=(
-                _optional_env_int("OPENLOOM_NOTIFY_RECENT_MESSAGES") or 3
+            ui_host=_str_or_env(
+                ui.get("host"), "OPENLOOM_UI_HOST", default="127.0.0.1",
             ),
-            idle_completes_task=_optional_env_bool(
-                "OPENLOOM_IDLE_COMPLETES_TASK", default=True,
+            ui_port=_int_or_env(
+                ui.get("port"), "OPENLOOM_UI_PORT", default=55413,
             ),
-            auto_accept_permissions=_optional_env_bool(
-                "OPENLOOM_AUTO_ACCEPT_PERMISSIONS", default=True,
+            notify=NotifyConfig.from_sources(
+                notify_raw if isinstance(notify_raw, dict) else None,
+            ),
+            notify_recent_messages=_int_or_env(
+                harness.get("notify_recent_messages"),
+                "OPENLOOM_NOTIFY_RECENT_MESSAGES",
+                default=3,
+            ),
+            idle_completes_task=_bool_or_env(
+                harness.get("idle_completes_task"),
+                "OPENLOOM_IDLE_COMPLETES_TASK",
+                default=True,
+            ),
+            auto_accept_permissions=_bool_or_env(
+                harness.get("auto_accept_permissions"),
+                "OPENLOOM_AUTO_ACCEPT_PERMISSIONS",
+                default=True,
             ),
         )
 
 
-def _optional_env_int(name: str) -> int | None:
-    raw = os.getenv(name, "").strip()
-    if not raw:
-        return None
-    try:
-        value = int(raw)
-    except ValueError:
-        return None
-    return value if value > 0 else None
+def _str_or_env(file_value: Any, env_name: str, *, default: str) -> str:
+    """Pick the first non-empty value in priority: env > file > default."""
+    env_value = os.getenv(env_name, "").strip()
+    if env_value:
+        return env_value
+    if file_value is not None and str(file_value).strip():
+        return str(file_value).strip()
+    return default
 
 
-def _optional_env_bool(name: str, *, default: bool) -> bool:
-    raw = os.getenv(name, "").strip().lower()
-    if not raw:
-        return default
-    return raw in ("1", "true", "yes", "on")
+def _int_or_env(file_value: Any, env_name: str, *, default: int) -> int:
+    env_value = os.getenv(env_name, "").strip()
+    if env_value:
+        try:
+            value = int(env_value)
+            if value > 0:
+                return value
+        except ValueError:
+            pass
+    if file_value is not None:
+        try:
+            value = int(file_value)
+            if value > 0:
+                return value
+        except (ValueError, TypeError):
+            pass
+    return default
+
+
+def _bool_or_env(file_value: Any, env_name: str, *, default: bool) -> bool:
+    env_value = os.getenv(env_name, "").strip().lower()
+    if env_value:
+        return env_value in ("1", "true", "yes", "on")
+    if file_value is not None:
+        if isinstance(file_value, bool):
+            return file_value
+        text = str(file_value).strip().lower()
+        if text in ("1", "true", "yes", "on"):
+            return True
+        if text in ("0", "false", "no", "off"):
+            return False
+    return default

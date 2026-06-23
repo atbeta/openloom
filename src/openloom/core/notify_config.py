@@ -62,7 +62,14 @@ class NotifyConfig:
 
     @classmethod
     def from_env(cls) -> NotifyConfig:
-        """Read simple env-based config — used when no yaml section is supplied."""
+        """Read env-var-only config. Used as a fallback when the YAML
+        file has no ``notify`` section. Webhook list comes from
+        ``OPENLOOM_NOTIFY_WEBHOOK_URLS`` (comma-separated); per-webhook
+        secrets/events/retries come from
+        ``OPENLOOM_NOTIFY_WEBHOOK_SECRET`` /
+        ``OPENLOOM_NOTIFY_WEBHOOK_EVENTS`` /
+        ``OPENLOOM_NOTIFY_WEBHOOK_MAX_RETRIES``.
+        """
         webhooks: list[WebhookEntry] = []
         urls = _split_env(os.getenv("OPENLOOM_NOTIFY_WEBHOOK_URLS", ""))
         for url in urls:
@@ -76,6 +83,44 @@ class NotifyConfig:
             ))
 
         return cls(webhooks=webhooks)
+
+    @classmethod
+    def from_sources(cls, file_cfg: dict[str, Any] | None) -> NotifyConfig:
+        """Build NotifyConfig from YAML notify section + OPENLOOM_* env vars.
+
+        Order of precedence (highest wins):
+        1. Env vars (``OPENLOOM_NOTIFY_WEBHOOK_*``)
+        2. YAML ``notify.webhook`` entries
+
+        The YAML list replaces the env-var list when present — env
+        vars fill in defaults for entries that don't specify the
+        field, not the other way around. A YAML file with no
+        ``notify`` section falls through to env vars.
+        """
+        env_webhooks = cls.from_env().webhooks
+        env_by_url: dict[str, WebhookEntry] = {wh.url: wh for wh in env_webhooks}
+
+        if not file_cfg:
+            return cls(webhooks=list(env_webhooks))
+
+        # The YAML file's webhook list, with env vars merged in for
+        # fields each entry didn't override (so signing_secret,
+        # events, and max_retries are inherited from the env-var
+        # defaults — matching how a "yaml partial override" should
+        # feel).
+        out: list[WebhookEntry] = []
+        for entry in cls.from_mapping(file_cfg).webhooks:
+            base = env_by_url.get(entry.url, WebhookEntry(url=entry.url))
+            out.append(WebhookEntry(
+                url=entry.url,
+                events=entry.events or base.events,
+                timeout_seconds=entry.timeout_seconds or base.timeout_seconds,
+                headers=entry.headers or base.headers,
+                signing_secret=entry.signing_secret or base.signing_secret,
+                max_retries=entry.max_retries or base.max_retries,
+            ))
+
+        return cls(webhooks=out)
 
 
 def _split_env(raw: str) -> list[str]:
