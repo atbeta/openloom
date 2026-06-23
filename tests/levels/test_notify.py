@@ -135,6 +135,44 @@ def test_webhook_on_event_does_not_block_event_bus() -> None:
     sink.close(timeout=10.0)
 
 
+@respx.mock
+def test_webhook_ignores_system_proxy(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression test: WebhookSink's internal httpx.Client must not
+    honour HTTP_PROXY / HTTPS_PROXY environment variables. On a machine
+    with a system-wide proxy (corporate VPN, Clash, mitmproxy, etc.),
+    requests to 127.0.0.1 get routed through that proxy, which either
+    times out or returns a generic \"Content Filter - Access Denied\" HTML
+    page instead of reaching the actual webhook target. Without
+    trust_env=False the connector's inbound webhook listener is
+    unreachable and every TASK_UPDATED event wastes its full retry budget.
+
+    Mirrors the openloom-connector fix in commit 62f432b (the connector's
+    inbound push side already does this).
+    """
+    import httpx as _httpx
+
+    monkeypatch.setenv("HTTP_PROXY", "http://proxy.invalid:9999")
+    monkeypatch.setenv("HTTPS_PROXY", "http://proxy.invalid:9999")
+    monkeypatch.setenv("ALL_PROXY", "http://proxy.invalid:9999")
+
+    with respx.mock:
+        route = respx.post("https://example.com/hook").mock(
+            return_value=_httpx.Response(200, text="ok"),
+        )
+        sink = WebhookSink(
+            url="https://example.com/hook",
+            events=frozenset({"TASK_COMPLETED"}),
+        )
+        sink.on_event(_event())
+        _wait_for_route(route, timeout=2.0)
+        sink.close()
+
+    # If trust_env is on, httpx would route the request through the
+    # proxy.invalid host and respx would not see the call. With
+    # trust_env=False, respx intercepts the request directly.
+    assert route.call_count == 1
+
+
 # --- WebhookSink ---
 
 
