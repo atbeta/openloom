@@ -17,6 +17,7 @@ class Settings:
     ui_port: int = 55413
     notify: NotifyConfig = field(default_factory=NotifyConfig.empty)
     notify_recent_messages: int = 3
+    idle_completes_task: bool = False
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -37,6 +38,9 @@ class Settings:
             notify_recent_messages=(
                 _optional_env_int("OPENLOOM_NOTIFY_RECENT_MESSAGES") or 3
             ),
+            idle_completes_task=_optional_env_bool(
+                "OPENLOOM_IDLE_COMPLETES_TASK", default=False,
+            ),
         )
 
 
@@ -49,3 +53,10 @@ def _optional_env_int(name: str) -> int | None:
     except ValueError:
         return None
     return value if value > 0 else None
+
+
+def _optional_env_bool(name: str, *, default: bool) -> bool:
+    raw = os.getenv(name, "").strip().lower()
+    if not raw:
+        return default
+    return raw in ("1", "true", "yes", "on")

@@ -50,6 +50,7 @@ class HarnessRunner:
         status: StatusPort,
         *,
         notify_recent_messages: int = 3,
+        idle_completes_task: bool = False,
     ) -> None:
         self.opencode: OpenCodePort = opencode
         self.bus: EventBus = bus
@@ -57,6 +58,7 @@ class HarnessRunner:
         self.prompts: PromptsPort = prompts
         self.status: StatusPort = status
         self.notify_recent_messages = max(1, int(notify_recent_messages))
+        self.idle_completes_task = bool(idle_completes_task)
 
     def _task_name(self, task_id: str) -> str:
         task = self.store.get_task(task_id)
@@ -268,6 +270,8 @@ class HarnessRunner:
         #   * busy → "running" (agent in flight)
         #   * idle + assistant says TASK COMPLETE → "completed"
         #   * idle + nothing → still "running" (webhook can decide)
+        #   * idle + OPENLOOM_IDLE_COMPLETES_TASK=true + session has produced
+        #     any activity → "completed" (treat "agent went quiet" as done)
         permission = None
         try:
             permission = await self.opencode.resolve_session_permissions(
@@ -286,16 +290,23 @@ class HarnessRunner:
             status = "waiting"
             summary = "OpenCode reported retry"
         else:
-            # Look for a TASK COMPLETE marker in the latest
-            # assistant turn. If present, mark the task completed;
-            # otherwise leave it as "running" so the dashboard
-            # shows the user that the agent is sitting idle.
+            # Session is idle. Look for a TASK COMPLETE marker in the
+            # latest assistant turn; if found, mark the task completed.
+            # Otherwise leave it as "running" so the dashboard shows the
+            # user that the agent is sitting idle — UNLESS the operator
+            # opted into idle_completes_task, in which case "idle" itself
+            # is treated as completion. We require at least one assistant
+            # message so freshly-created tasks aren't auto-completed before
+            # the agent has even responded.
             last_text = (
                 recent_activity[0]["text"] if recent_activity else ""
             )
             if "TASK COMPLETE" in last_text.upper():
                 status = "completed"
                 summary = "Agent reported TASK COMPLETE"
+            elif self.idle_completes_task and recent_activity:
+                status = "completed"
+                summary = "Agent idle, treated as complete"
             else:
                 status = "running"
                 summary = "Session idle — awaiting input"
