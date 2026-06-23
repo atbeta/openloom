@@ -69,6 +69,7 @@ def build_harness(
         status=session_status,
         notify_recent_messages=settings.notify_recent_messages,
         idle_completes_task=settings.idle_completes_task,
+        auto_accept_permissions=settings.auto_accept_permissions,
     )
 
     return HarnessBundle(

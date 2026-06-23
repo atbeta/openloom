@@ -640,15 +640,17 @@ class OpenCodeClient:
 
     async def resolve_session_permissions(
         self, session_id: str,
-    ) -> dict[str, str] | None:
-        """Return a {"status", "summary"} describing what should
-        happen for the task in the next dashboard tick, or None
-        if there are no pending permissions for this session.
+    ) -> dict[str, Any] | None:
+        """Return a status dict describing what should happen for the
+        task in the next dashboard tick, or None if there are no
+        pending permissions for this session.
 
-        0.12 dropped the auto-accept path; the harness is now a
-        read-only consumer of pending permissions. Webhook
-        handlers that want to auto-accept can call
-        ``client.respond_permission`` directly.
+        The dict carries the raw ``pending`` list (with the actual
+        permission IDs) so the harness can auto-accept them when
+        ``auto_accept_permissions`` is enabled. When ``auto_accept``
+        is False the dashboard renders ``status="waiting"`` and
+        ``summary`` and the operator responds via
+        ``POST /api/sessions/{id}/permissions/{perm_id}``.
         """
         pending = await self.list_pending_permissions(session_id)
         if not pending:
@@ -656,6 +658,7 @@ class OpenCodeClient:
         return {
             "status": "waiting",
             "summary": permission_waiting_summary(pending),
+            "pending": pending,
         }
 
     async def diff(self, session_id: str) -> list[dict[str, Any]]:

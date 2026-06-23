@@ -37,6 +37,8 @@ Webhook is the only delivery path in 0.12. The previous file-based notification 
 | `OPENLOOM_NOTIFY_WEBHOOK_URLS` | *(unset)* | Comma- or space-separated list of webhook URLs. Each becomes a `WebhookSink`. |
 | `OPENLOOM_NOTIFY_WEBHOOK_EVENTS` | `*` | Optional comma- or space-separated list of event names to forward. Default forwards every event. |
 | `OPENLOOM_NOTIFY_RECENT_MESSAGES` | `3` | How many of the latest assistant messages to include in `data.recent_activity` on every event. Each entry is truncated (1 000 chars of text, 80 chars of tool input) so the webhook stays well under 40 KB even for verbose agents. |
+| `OPENLOOM_IDLE_COMPLETES_TASK` | `true` | When the agent session is idle but has produced at least one assistant message, treat that as task completion. Set to `false` to require an explicit `TASK COMPLETE` marker. The harness layer will introduce more nuanced retry / nudge controls and may revisit this default. |
+| `OPENLOOM_AUTO_ACCEPT_PERMISSIONS` | `true` | Auto-answer every pending tool-permission prompt with OpenCode's "once" reply. Webhook / connector users are usually remote and cannot drive the dashboard to click "Allow" — leaving this off means tasks stay stuck in `waiting` until somebody logs into the UI. Set to `false` to keep the previous behaviour and route every permission through `POST /api/sessions/{id}/permissions/{perm_id}` for manual approval. |
 
 Payload schema and event types: [notifications.md](notifications.md).
 

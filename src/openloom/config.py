@@ -17,7 +17,28 @@ class Settings:
     ui_port: int = 55413
     notify: NotifyConfig = field(default_factory=NotifyConfig.empty)
     notify_recent_messages: int = 3
-    idle_completes_task: bool = False
+    # Treat "agent went idle" as completion by default. Webhook /
+    # connector users want the task to terminate as soon as the
+    # agent stops responding; without this the task sits in
+    # "running" forever once OpenCode's last message is delivered.
+    # Set OPENLOOM_IDLE_COMPLETES_TASK=false to revert to the strict
+    # "only TASK COMPLETE marker counts" behaviour. The harness
+    # layer will introduce more nuanced retry / nudge controls and
+    # may revisit this default.
+    idle_completes_task: bool = True
+    # Auto-accept every pending tool-permission prompt that
+    # OpenCode raises during a session. Webhook / connector users
+    # are usually remote and cannot drive a dashboard to click
+    # "Allow" — leaving the default off means tasks stay stuck in
+    # ``waiting`` until somebody logs into the UI. The acceptance
+    # uses OpenCode's "once" response so each tool call still asks
+    # permission in a long-lived session (the user keeps audit
+    # visibility on the OpenCode side); what changes is that the
+    # harness proactively answers the prompt instead of waiting
+    # for an operator. Set OPENLOOM_AUTO_ACCEPT_PERMISSIONS=false
+    # to keep the previous behaviour and route every permission
+    # through /api/permissions for manual approval.
+    auto_accept_permissions: bool = True
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -39,7 +60,10 @@ class Settings:
                 _optional_env_int("OPENLOOM_NOTIFY_RECENT_MESSAGES") or 3
             ),
             idle_completes_task=_optional_env_bool(
-                "OPENLOOM_IDLE_COMPLETES_TASK", default=False,
+                "OPENLOOM_IDLE_COMPLETES_TASK", default=True,
+            ),
+            auto_accept_permissions=_optional_env_bool(
+                "OPENLOOM_AUTO_ACCEPT_PERMISSIONS", default=True,
             ),
         )
 

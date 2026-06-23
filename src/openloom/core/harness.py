@@ -51,6 +51,7 @@ class HarnessRunner:
         *,
         notify_recent_messages: int = 3,
         idle_completes_task: bool = False,
+        auto_accept_permissions: bool = True,
     ) -> None:
         self.opencode: OpenCodePort = opencode
         self.bus: EventBus = bus
@@ -59,6 +60,7 @@ class HarnessRunner:
         self.status: StatusPort = status
         self.notify_recent_messages = max(1, int(notify_recent_messages))
         self.idle_completes_task = bool(idle_completes_task)
+        self.auto_accept_permissions = bool(auto_accept_permissions)
 
     def _task_name(self, task_id: str) -> str:
         task = self.store.get_task(task_id)
@@ -270,8 +272,13 @@ class HarnessRunner:
         #   * busy → "running" (agent in flight)
         #   * idle + assistant says TASK COMPLETE → "completed"
         #   * idle + nothing → still "running" (webhook can decide)
-        #   * idle + OPENLOOM_IDLE_COMPLETES_TASK=true + session has produced
-        #     any activity → "completed" (treat "agent went quiet" as done)
+        #   * idle + session has produced any activity → "completed"
+        #     (treat "agent went quiet" as done; this is the default.
+        #     Set OPENLOOM_IDLE_COMPLETES_TASK=false to require the
+        #     explicit TASK COMPLETE marker.)
+        #   * idle + no recent_activity → still "running" (protect
+        #     freshly-created tasks from being auto-completed before
+        #     the agent has even responded)
         permission = None
         try:
             permission = await self.opencode.resolve_session_permissions(
@@ -283,6 +290,27 @@ class HarnessRunner:
         if permission is not None:
             status = permission["status"]
             summary = permission["summary"]
+            if self.auto_accept_permissions:
+                # Auto-answer every pending prompt with "once" so the
+                # agent can keep working without an operator clicking
+                # through the dashboard. We do this *before* falling
+                # through to the running/busy check below because, in
+                # practice, the permission is the only thing keeping
+                # the session idle — accepting it makes the next tick
+                # see the agent back in flight.
+                for entry in permission.get("pending") or ():
+                    perm_id = str(entry.get("id") or "")
+                    if not perm_id:
+                        continue
+                    try:
+                        await self.opencode.respond_permission(
+                            session_id, perm_id,
+                        )
+                    except Exception:
+                        _logger.warning(
+                            "auto-accept failed for permission %s on session %s",
+                            perm_id, session_id,
+                        )
         elif is_busy:
             status = "running"
             summary = "Agent is busy"
