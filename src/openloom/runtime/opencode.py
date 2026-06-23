@@ -398,14 +398,45 @@ class OpenCodeClient:
         )
         return self._normalize_session(session)
 
-    async def send_prompt_async(self, session_id: str, prompt: str, agent: str | None = None) -> None:
+    async def send_prompt_async(
+        self,
+        session_id: str,
+        prompt: str,
+        agent: str | None = None,
+        *,
+        directory: str | None = None,
+    ) -> None:
+        """Dispatch a prompt to an existing session.
+
+        ``directory`` is forwarded as a ``?directory=...`` query param
+        on the underlying HTTP call. ``POST /session`` binds the
+        session's directory at creation time, but the agent's tool
+        subprocess CWD is resolved per-prompt on the OpenCode server.
+        On Windows in particular, the server's own CWD (often
+        ``C:\\Users\\<user>``) is used unless the prompt explicitly
+        re-binds the workspace, which manifests as the agent
+        reporting ``C:\\Users\\xxx is not a git directory`` even
+        though the session metadata shows the correct path. Passing
+        the workspace here keeps the session's directory sticky
+        across the lifetime of the agent loop.
+
+        See ``tests/runtime/test_opencode_prompt_async.py``.
+        """
         payload: dict[str, Any] = {
             "parts": [{"type": "text", "text": prompt}],
         }
         if agent:
             payload["agent"] = agent
+        params: dict[str, str] | None = (
+            {"directory": directory} if directory else None
+        )
         try:
-            await self._request("POST", f"/session/{session_id}/prompt_async", json=payload)
+            await self._request(
+                "POST",
+                f"/session/{session_id}/prompt_async",
+                json=payload,
+                params=params,
+            )
             return
         except httpx.HTTPStatusError as exc:
             if exc.response.status_code not in (404, 405):
@@ -415,6 +446,7 @@ class OpenCodeClient:
             "POST",
             f"/session/{session_id}/message",
             json=payload,
+            params=params,
             timeout=120,
         )
 

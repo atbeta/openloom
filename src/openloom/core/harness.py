@@ -380,6 +380,7 @@ class HarnessRunner:
         await self.opencode.send_prompt_async(
             session_id=session_id,
             prompt=spec.goal,
+            directory=spec.workspace or None,
         )
 
         now = time.time()

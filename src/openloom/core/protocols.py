@@ -30,7 +30,12 @@ class OpenCodePort(Protocol):
         self, session_id: str,
     ) -> dict[str, str] | None: ...
     async def send_prompt_async(
-        self, *, session_id: str, prompt: str, agent: str | None = None,
+        self,
+        *,
+        session_id: str,
+        prompt: str,
+        agent: str | None = None,
+        directory: str | None = None,
     ) -> None: ...
     async def create_session(self, *, cwd: str, title: str) -> dict[str, Any]: ...
     async def abort_session(self, session_id: str) -> bool: ...
