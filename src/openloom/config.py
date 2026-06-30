@@ -89,10 +89,10 @@ class Settings:
         env_database = os.getenv("OPENLOOM_DATABASE", "").strip()
         if env_database:
             database_raw = env_database
-        database = Path(str(database_raw) if database_raw else ".openloom/openloom.sqlite3")
+        database = Path(str(database_raw) if database_raw else "openloom.sqlite3")
         database = database.expanduser()
         if not database.is_absolute():
-            database = Path.cwd() / database
+            database = Path.home() / ".openloom" / database
 
         notify_raw = (
             file_cfg.get("notify") if isinstance(file_cfg, dict) else None

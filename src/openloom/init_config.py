@@ -35,8 +35,8 @@ ui:
   # port: 55413
 
 # ---- Database ----
-# Path to the SQLite database. Relative paths resolve against CWD.
-# database: .openloom/openloom.sqlite3
+# Path to the SQLite database. Relative paths resolve against ~/.openloom/.
+# database: openloom.sqlite3
 
 # ---- Harness behaviour ----
 harness:
