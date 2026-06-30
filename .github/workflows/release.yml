@@ -124,6 +124,7 @@ jobs:
             --collect-all requests `
             --collect-all urllib3 `
             --collect-all certifi `
+            --collect-data certifi `
             --collect-all charset_normalizer `
             --collect-all idna `
             src/openloom/__main__.py
