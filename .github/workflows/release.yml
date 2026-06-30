@@ -119,7 +119,10 @@ jobs:
 
       - name: Build exe
         run: |
-          uv run pyinstaller --onefile --name openloom `
+          # --onedir avoids the temp-extraction issue on Windows where
+          # corporate security software (DLP, endpoint protection,
+          # Winsock LSP) blocks the unpacked exe from opening sockets.
+          uv run pyinstaller --onedir --name openloom `
             --add-data "src/openloom/server/static;openloom/server/static" `
             --collect-all requests `
             --collect-all urllib3 `
@@ -129,11 +132,21 @@ jobs:
             --collect-all idna `
             src/openloom/__main__.py
 
-      - name: Test exe
+          # Zip the onedir output for easy distribution
+          Compress-Archive -Path dist/openloom/* -DestinationPath dist/openloom.zip
+
+      # Quick smoke test: verify exe can import and use requests
+      - name: Smoke test (requests in exe)
         run: |
-          .\dist\openloom.exe --help
+          uv run python -c "
+          import requests, ssl, socket
+          print('SSL:', ssl.OPENSSL_VERSION)
+          print('DNS httpbin.org:', socket.gethostbyname('httpbin.org'))
+          r = requests.get('https://httpbin.org/ip', timeout=30)
+          print('status:', r.status_code)
+          "
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/openloom.exe
+          files: dist/openloom.zip
