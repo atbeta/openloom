@@ -109,21 +109,29 @@ jobs:
         with:
           enable-cache: true
 
-      - name: Sync dependencies
+      - name: Sync + install build deps
         run: |
           uv sync --extra ui --group dev --frozen
           uv pip install pyinstaller requests
+
+      - name: Verify requests exists
+        run: uv run python -c "import requests; print('requests', requests.__version__)"
 
       - name: Build exe
         run: |
           uv run pyinstaller --onefile --name openloom `
             --add-data "src/openloom/server/static;openloom/server/static" `
             --collect-all requests `
+            --collect-all urllib3 `
+            --collect-all certifi `
+            --collect-all charset_normalizer `
+            --collect-all idna `
             src/openloom/__main__.py
 
-      - name: Verify exe
+      - name: Test exe
         run: |
           .\dist\openloom.exe --help
+          .\dist\openloom.exe --version
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2
