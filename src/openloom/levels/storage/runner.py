@@ -38,6 +38,7 @@ STATUS_INTERVAL_S = 30.0   # minimum seconds between status writes for same task
 POLL_RETRY_MAX = 3          # retries for connector.ls()
 POLL_RETRY_DELAY_S = 2.0    # delay between ls retries
 POLL_TIMEOUT_S = 30.0       # per-poll-cycle deadline
+DOWNLOAD_TIMEOUT_S = 60.0  # max seconds for connector.download
 
 
 class StorageRunner:
@@ -143,9 +144,22 @@ class StorageRunner:
         ``harness.add_task`` stays on the event loop — it touches the
         SQLite store which is not thread-safe.
         """
-        content = await asyncio.to_thread(self._connector.download, entry.path)
-        if content is None:
+        _logger.info("storage: download %s...", entry.path)
+        try:
+            content = await asyncio.wait_for(
+                asyncio.to_thread(self._connector.download, entry.path),
+                timeout=DOWNLOAD_TIMEOUT_S,
+            )
+        except TimeoutError:
+            _logger.warning("storage: download timed out — %s", entry.path)
             return
+        except Exception:
+            _logger.exception("storage: download failed — %s", entry.path)
+            return
+        if content is None:
+            _logger.warning("storage: download returned None — %s", entry.path)
+            return
+        _logger.info("storage: parsed %s (%d bytes)", entry.path, len(content))
         spec = parse_spec(content, entry.path)
         if spec is None:
             _logger.debug("storage: skipping %s — not a valid task spec", entry.path)
@@ -164,12 +178,18 @@ class StorageRunner:
             return
 
         # add_task touches the SQLite store — keep it on the event loop thread.
-        task_id = self._harness.add_task(spec, active_session_id=session_id or None)
-        if task_id:
-            self._seen.add(entry.path)
-            self._task_file[task_id] = entry.path
-            _logger.info("storage: task %s ← %s (workspace=%r sessionId=%r)",
-                         task_id, entry.path, workspace, session_id)
+        try:
+            task_id = self._harness.add_task(spec, active_session_id=session_id or None)
+        except Exception:
+            _logger.exception("storage: add_task failed — %s", entry.path)
+            return
+        if not task_id:
+            _logger.warning("storage: add_task returned empty id — %s", entry.path)
+            return
+        self._seen.add(entry.path)
+        self._task_file[task_id] = entry.path
+        _logger.info("storage: task %s ← %s (workspace=%r sessionId=%r)",
+                     task_id, entry.path, workspace, session_id)
 
     # ── EventBus handlers ────────────────────────────────────────────────
 
