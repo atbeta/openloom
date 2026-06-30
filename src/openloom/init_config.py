@@ -55,38 +55,49 @@ harness:
 #       headers: {}
 
 # ---- Storage connector (file-based task dispatch) ----
+# Pick a connector class and configure its kwargs.
+#
+# Built-in: openloom.levels.storage.fs.FilesystemConnector (local disk)
+# Custom:   my_connector.MyConnector (drop .py in ~/.openloom/connectors/)
+#
 # storage:
-#   enabled: false
-#   connector:                     # fully-qualified name of your Connector class
-#     module: my_connector         # Python module in ~/.openloom/connectors/
-#     class: MyConnector
-#   inbox_dir: inbox               # poll this directory for new task files
-#   archive_dir: ""                # if set, move completed tasks here
+#   class: openloom.levels.storage.fs.FilesystemConnector
+#   kwargs:                      # passed to the connector constructor
+#     root: /path/to/storage     # FilesystemConnector: root directory
+#   inbox: inbox                 # poll this subdirectory for task files
+#   outbox: results              # task results go here (optional)
+#   archive: archive             # if set, move completed tasks here
 #   poll_interval_seconds: 30
 """
 
-CONNECTOR_EXAMPLE_PY = """\
-\"\"\"Example storage connector.
+CONNECTOR_EXAMPLE_PY = '''\
+"""Example storage connector.
 
 Copy this file, implement the methods, then reference it in config.yaml:
 
     storage:
-      enabled: true
-      connector:
-        module: my_connector
-        class: MyConnector
-      inbox_dir: inbox
-\"\"\"
+      class: my_connector.MyConnector
+      kwargs:
+        api_key: "..."
+      inbox: inbox
+
+For simple local-disk use, no connector code is needed:
+    storage:
+      class: openloom.levels.storage.fs.FilesystemConnector
+      kwargs:
+        root: /path/to/watch
+      inbox: inbox
+"""
 
 from openloom.levels.storage.base import Connector, FileEntry
 
 
 class MyConnector(Connector):
-    \"\"\"Connect to your own storage backend (local filesystem, S3, WebDAV, etc.).
+    """Connect to your own storage backend (local filesystem, S3, WebDAV, etc.).
 
     The runner calls your methods; you don't need to worry about
     inbox/outbox/archive directory semantics — those live in the runner.
-    \"\"\"
+    """
 
     def __init__(self, **kwargs):
         super().__init__()
@@ -97,48 +108,48 @@ class MyConnector(Connector):
     # ── required methods ────────────────────────────────────────
 
     def ls(self, path: str) -> list[FileEntry]:
-        \"\"\"List files in *path*.
+        """List files in *path*.
 
         Args:
             path: Directory path to list.
 
         Returns:
             List of :class:`FileEntry` objects, one per file.
-        \"\"\"
+        """
         raise NotImplementedError("list files in the storage backend")
 
     def download(self, path: str) -> bytes | None:
-        \"\"\"Download *path* contents.
+        """Download *path* contents.
 
         Args:
             path: File path to download.
 
         Returns:
             File contents as bytes, or ``None`` if not found.
-        \"\"\"
+        """
         raise NotImplementedError("download file from the storage backend")
 
     def upload(self, path: str, content: bytes) -> None:
-        \"\"\"Upload *content* to *path*.
+        """Upload *content* to *path*.
 
         Args:
             path: Destination file path.
             content: File contents as bytes.
-        \"\"\"
+        """
         raise NotImplementedError("upload file to the storage backend")
 
     def delete(self, path: str) -> None:
-        \"\"\"Delete *path*. No-op if it doesn't exist.
+        """Delete *path*. No-op if it doesn't exist.
 
         Args:
             path: File path to delete.
-        \"\"\"
+        """
         raise NotImplementedError("delete file from the storage backend")
 
     # ── optional override ───────────────────────────────────────
 
     def move(self, source: str, dest: str) -> None:
-        \"\"\"Move/rename *source* to *dest*.
+        """Move/rename *source* to *dest*.
 
         Override this if your backend provides native move/rename
         (one API call instead of the default download+upload+delete).
@@ -146,9 +157,9 @@ class MyConnector(Connector):
         Args:
             source: Source file path.
             dest: Destination file path.
-        \"\"\"
+        """
         super().move(source, dest)
-"""
+'''
 
 
 def user_config_dir() -> Path:
