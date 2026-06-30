@@ -118,15 +118,27 @@ def main() -> None:
     )
     sub = parser.add_subparsers(dest="command")
 
+    # Share --verbose with subcommands so both "openloom -v serve"
+    # and "openloom serve -v" work.
+    verbose_parent = argparse.ArgumentParser(add_help=False)
+    verbose_parent.add_argument(
+        "--verbose", "-v", action="store_true",
+        help="Print the full startup banner and enable DEBUG logging for openloom.*",
+    )
+
     serve_p = sub.add_parser(
         "serve", help="Start the OpenLoom server (web dashboard + REST/webhook API)",
+        parents=[verbose_parent], add_help=False,
     )
+    serve_p.add_argument("--help", "-h", action="help", help="show this help message and exit")
     serve_p.add_argument("--host", help="Bind host (default: 127.0.0.1)")
     serve_p.add_argument("--port", type=int, help="Bind port (default: 55413)")
 
-    sub.add_parser(
+    init_p = sub.add_parser(
         "init", help="Write ~/.openloom/config.yaml and connector example",
+        parents=[verbose_parent], add_help=False,
     )
+    init_p.add_argument("--help", "-h", action="help", help="show this help message and exit")
 
     args = parser.parse_args()
 
