@@ -128,7 +128,12 @@ class StorageRunner:
                     "storage: poll failed, next cycle in %ds",
                     self._cfg.poll_interval_seconds,
                 )
-            self._stopped.wait(timeout=self._cfg.poll_interval_seconds)
+            # asyncio.Event.wait() is async — can't call from sync context.
+            # Poll is_set() with sub-second sleeps for responsive shutdown.
+            for _ in range(int(self._cfg.poll_interval_seconds * 5)):
+                if self._stopped.is_set():
+                    break
+                time.sleep(0.2)
 
     def _poll_once(self) -> None:
         """One synchronous poll cycle: ls inbox, dispatch new task files."""
