@@ -1,41 +1,54 @@
 # OpenLoom Launcher — PowerShell
 # Checks for OpenCode, starts it if needed, then launches OpenLoom.
 
+$ErrorActionPreference = "Continue"
+
 Write-Host "======================" -ForegroundColor Cyan
 Write-Host "  OpenLoom Launcher" -ForegroundColor Cyan
 Write-Host "======================" -ForegroundColor Cyan
 Write-Host ""
 
 # ── Check OpenCode ──────────────────────────
-$opencodeUrl = "http://127.0.0.1:4096"
-Write-Host "[*] Checking OpenCode ($opencodeUrl)..." -ForegroundColor Gray
+$opencodeUrl = $env:OPENLOOM_OPENCODE_URL
+if (-not $opencodeUrl) { $opencodeUrl = "http://127.0.0.1:4096" }
+$healthUrl = "$opencodeUrl/global/health"
 
+Write-Host "[*] Checking OpenCode ($healthUrl)..." -ForegroundColor Gray
+
+$running = $false
 try {
-    $response = Invoke-WebRequest -Uri "$opencodeUrl/health" -TimeoutSec 3 -SkipCertificateCheck
-    if ($response.StatusCode -eq 200) {
+    $response = Invoke-WebRequest -Uri $healthUrl -TimeoutSec 3 -SkipCertificateCheck
+    if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 300) {
         Write-Host "[✓] OpenCode is running" -ForegroundColor Green
+        $running = $true
     }
 } catch {
+    Write-Host "    ($($_.Exception.Message))" -ForegroundColor DarkGray
+}
+
+if (-not $running) {
     Write-Host "[!] OpenCode not reachable, trying to start..." -ForegroundColor Yellow
     Start-Process -FilePath "opencode" -ArgumentList "serve" -WindowStyle Minimized
 
-    # Wait up to 30 seconds
+    Write-Host "[*] Waiting for OpenCode..." -ForegroundColor Gray
     $tries = 0
     do {
         Start-Sleep -Seconds 2
         $tries++
         try {
-            $check = Invoke-WebRequest -Uri "$opencodeUrl/health" -TimeoutSec 3 -SkipCertificateCheck
-            if ($check.StatusCode -eq 200) {
+            $check = Invoke-WebRequest -Uri $healthUrl -TimeoutSec 3 -SkipCertificateCheck
+            if ($check.StatusCode -ge 200 -and $check.StatusCode -lt 300) {
                 Write-Host "[✓] OpenCode responded after $tries attempts" -ForegroundColor Green
+                $running = $true
                 break
             }
         } catch { }
     } while ($tries -lt 15)
 
-    if ($tries -ge 15) {
+    if (-not $running) {
         Write-Host "[X] OpenCode still not reachable after 30 seconds" -ForegroundColor Red
-        Write-Host "    Please start 'opencode serve' manually and re-run."
+        Write-Host "    URL : $opencodeUrl"
+        Write-Host "    Test: curl.exe -sS $healthUrl"
         Read-Host "Press Enter to exit"
         exit 1
     }
@@ -44,12 +57,11 @@ try {
 # ── Start OpenLoom ──────────────────────────
 Write-Host ""
 Write-Host "[*] Starting OpenLoom..." -ForegroundColor Gray
-Write-Host "──────────────────────────────────" -ForegroundColor DarkGray
 
 $openloomExe = Get-Command openloom -ErrorAction SilentlyContinue
 if (-not $openloomExe) {
     Write-Host "[X] 'openloom' not found in PATH" -ForegroundColor Red
-    Write-Host "    Install: uv tool install 'openloom[ui]'"
+    Write-Host "    Install: uv tool install 'openloom[ui,docx]'"
     Read-Host "Press Enter to exit"
     exit 1
 }
@@ -58,4 +70,3 @@ if (-not $openloomExe) {
 
 Write-Host ""
 Write-Host "OpenLoom exited." -ForegroundColor Yellow
-Read-Host "Press Enter to exit"
