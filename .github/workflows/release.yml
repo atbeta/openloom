@@ -112,10 +112,10 @@ jobs:
       - name: Sync + install build deps
         run: |
           uv sync --extra ui --group dev --frozen
-          uv pip install pyinstaller requests
+          uv pip install pyinstaller requests python-docx
 
-      - name: Verify requests exists
-        run: uv run python -c "import requests; print('requests', requests.__version__)"
+      - name: Verify deps exist
+        run: uv run python -c "import requests; import docx; print('requests', requests.__version__, 'docx OK')"
 
       - name: Build exe
         run: |
@@ -130,6 +130,8 @@ jobs:
             --collect-data certifi `
             --collect-all charset_normalizer `
             --collect-all idna `
+            --collect-all python-docx `
+            --collect-all lxml `
             src/openloom/__main__.py
 
           # Zip the onedir output for easy distribution
