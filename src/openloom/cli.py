@@ -1,14 +1,4 @@
-"""
-openloom CLI — only the ``serve`` subcommand is shipped in 0.12.
-
-Earlier releases also offered ``init`` (write a starter
-``openloom.yaml``), ``watch`` (single-spec runner with manual
-checks / acceptance / step-acknowledgement), ``status`` and
-``log`` (task CLI inspection). All of those belonged to the
-manual-mode workflow that 0.12 removes. The web dashboard is
-the single control surface now; the CLI exists only to start
-the server.
-"""
+"""openloom CLI — ``serve`` and ``init``."""
 from __future__ import annotations
 
 import argparse
@@ -129,9 +119,25 @@ def main() -> None:
     serve_p.add_argument("--host", help="Bind host (default: 127.0.0.1)")
     serve_p.add_argument("--port", type=int, help="Bind port (default: 55413)")
 
+    init_p = sub.add_parser(
+        "init", help="Write ~/.openloom/config.yaml and connector example",
+    )
+
     args = parser.parse_args()
+
+    # ``init`` doesn't need settings / banner — just write files.
+    if args.command == "init":
+        from openloom.init_config import run_init
+        run_init()
+        return
+
     settings = Settings.from_env()
     notify_sinks = _build_notify_sinks(settings)
+
+    # Auto-init on first serve if no config exists yet.
+    if args.command == "serve":
+        from openloom.init_config import auto_init
+        auto_init()
 
     # Banner + log level: print as early as possible so the user sees
     # something on stdout even while the heavier subsystems import.

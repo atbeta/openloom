@@ -78,6 +78,33 @@ def _aggregate_message_stats(messages: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _tokens_missing_or_zero(session: dict[str, Any]) -> bool:
+    """Return True if a session needs token backfill.
+
+    Covers three cases:
+    - tokens field missing / None / empty dict
+    - tokens present but all numeric values are zero
+      (OpenCode 1.17 may return {"input": 0, "output": 0, ...})
+    """
+    tokens = session.get("tokens")
+    if not tokens:
+        return True
+    if not isinstance(tokens, dict):
+        return True
+    total = 0.0
+    for key in ("input", "output", "reasoning"):
+        value = tokens.get(key)
+        if isinstance(value, (int, float)):
+            total += value
+    cache = tokens.get("cache")
+    if isinstance(cache, dict):
+        for key in ("read", "write"):
+            value = cache.get(key)
+            if isinstance(value, (int, float)):
+                total += value
+    return total == 0.0
+
+
 class OpenCodeError(Exception):
     def __init__(self, status_code: int, message: str) -> None:
         super().__init__(status_code, message)
@@ -274,7 +301,7 @@ class OpenCodeClient:
         """
         targets = [
             s for s in sessions
-            if s.get("id") and not s.get("tokens")
+            if s.get("id") and _tokens_missing_or_zero(s)
         ]
 
         async def fill(session: dict[str, Any]) -> None:
