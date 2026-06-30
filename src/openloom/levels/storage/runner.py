@@ -14,7 +14,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from functools import partial
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -138,7 +137,12 @@ class StorageRunner:
     # ── dispatch ─────────────────────────────────────────────────────────
 
     async def _dispatch(self, entry: FileEntry) -> None:
-        """Download task file → parse → add to harness. All IO in thread."""
+        """Download task file → parse → add to harness.
+
+        Only ``connector.download`` runs in a thread (external IO).
+        ``harness.add_task`` stays on the event loop — it touches the
+        SQLite store which is not thread-safe.
+        """
         content = await asyncio.to_thread(self._connector.download, entry.path)
         if content is None:
             return
@@ -159,9 +163,8 @@ class StorageRunner:
             self._seen.add(entry.path)
             return
 
-        task_id = await asyncio.to_thread(
-            partial(self._harness.add_task, spec, active_session_id=session_id or None),
-        )
+        # add_task touches the SQLite store — keep it on the event loop thread.
+        task_id = self._harness.add_task(spec, active_session_id=session_id or None)
         if task_id:
             self._seen.add(entry.path)
             self._task_file[task_id] = entry.path
