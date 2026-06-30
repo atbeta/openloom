@@ -17,6 +17,8 @@ async def run_serve(
     from openloom.server.cold import require_fastapi
     require_fastapi()
 
+    print("  loading  harness...", end=" ", flush=True)
+
     import uvicorn
 
     from openloom.core.registry import get_sink
@@ -29,6 +31,7 @@ async def run_serve(
     from openloom.server.recent import RecentWorkspaces
 
     bundle = build_harness(settings, extra_sinks=extra_sinks, subscribe_console=True)
+    print("done")
     store, bus, client, harness = bundle.store, bundle.bus, bundle.client, bundle.harness
 
     web_sink = get_sink("web")()
@@ -36,7 +39,9 @@ async def run_serve(
 
     recent = RecentWorkspaces(settings.database_path.parent / "recent.sqlite3")
 
+    print("  connect  OpenCode...", end=" ", flush=True)
     health = await client.health()
+    print("ok" if health.ok else "unreachable")
     if not health.ok:
         if settings.opencode_auto_start:
             print("OpenCode not found; auto-starting...")
@@ -53,9 +58,11 @@ async def run_serve(
                 file=sys.stderr,
             )
 
+    print("  refresh  sessions...", end=" ", flush=True)
     monitor = SessionMonitor(client)
 
     await monitor.refresh()
+    print(f"{len(monitor.sessions)} found")
 
     # ── storage runner ──
     storage_task: asyncio.Task[Any] | None = None
@@ -90,6 +97,9 @@ async def run_serve(
     )
 
     due = store.list_due_tasks()
+    print()
+    print("  starting server...")
+    print()
     print(f"openloom serve — http://{settings.ui_host}:{settings.ui_port}")
     print(f"  store:    {settings.database_path}")
     print(f"  tasks:    {len(due)} pending/running")

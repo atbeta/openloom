@@ -38,3 +38,6 @@ frontend/dist/
 
 # Hatch
 *.egg
+openloom.spec
+build/
+dist/
