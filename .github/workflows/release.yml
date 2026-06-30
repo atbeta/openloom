@@ -25,7 +25,7 @@ jobs:
           enable-cache: true
 
       - name: Sync dependencies
-        run: uv sync --extra ui --group dev --python ${{ matrix.python-version }} --frozen
+        run: uv sync --group dev --python ${{ matrix.python-version }} --frozen
 
       - name: Ruff
         run: uv run ruff check src tests
