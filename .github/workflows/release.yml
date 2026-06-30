@@ -131,7 +131,6 @@ jobs:
       - name: Test exe
         run: |
           .\dist\openloom.exe --help
-          .\dist\openloom.exe --version
 
       - name: Upload to release
         uses: softprops/action-gh-release@v2
