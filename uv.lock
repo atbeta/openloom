@@ -805,13 +805,14 @@ wheels = [
 
 [[package]]
 name = "openloom"
-version = "0.16.7"
+version = "0.16.8"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
     { name = "python-docx" },
     { name = "pyyaml" },
+    { name = "requests" },
     { name = "sse-starlette" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -838,6 +839,7 @@ requires-dist = [
     { name = "pygithub", marker = "extra == 'github'", specifier = ">=2.0" },
     { name = "python-docx", specifier = ">=1.0" },
     { name = "pyyaml", specifier = ">=6.0" },
+    { name = "requests", specifier = ">=2.31" },
     { name = "sse-starlette" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
 ]
