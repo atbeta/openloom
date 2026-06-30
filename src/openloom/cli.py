@@ -64,15 +64,20 @@ def _print_banner(args: argparse.Namespace, settings: Settings) -> None:
 
 
 def _configure_logging(verbose: bool) -> None:
-    """Bump openloom loggers to DEBUG when verbose, INFO otherwise.
-    Does not touch third-party loggers (uvicorn, httpx, etc.)."""
-    level = logging.DEBUG if verbose else logging.INFO
+    """Default: INFO for openloom.*, WARNING for noisy third-party libs.
+    ``-v``: DEBUG for everything."""
+    root_level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(
-        level=level,
+        level=root_level,
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
         datefmt="%H:%M:%S",
         force=True,
     )
+    # Silence httpx/httpcore INFO logs (one line per HTTP request).
+    # We log our own errors; the raw request spam isn't useful at INFO.
+    if not verbose:
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 
 def _apply_serve_overrides(
