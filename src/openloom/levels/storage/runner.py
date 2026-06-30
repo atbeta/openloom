@@ -63,6 +63,12 @@ class StorageRunner:
         self._stopped.set()
 
     async def run(self) -> None:
+        _logger.debug(
+            "storage: start — class=%s inbox=%s outbox=%s archive=%s interval=%ds prefix=%r",
+            self._cfg.connector_class.__name__, self._cfg.inbox_dir,
+            self._cfg.outbox_dir, self._cfg.archive_dir or "(none)",
+            self._cfg.poll_interval_seconds, self._cfg.task_prefix,
+        )
         _logger.info(
             "storage: polling %s every %ds, prefix=%r",
             self._cfg.inbox_dir, self._cfg.poll_interval_seconds, self._cfg.task_prefix,
@@ -84,9 +90,14 @@ class StorageRunner:
     # ── poll loop ────────────────────────────────────────────────────────
 
     async def _poll_loop(self) -> None:
+        _logger.debug("storage: poll loop started, interval=%ds prefix=%r inbox=%s",
+                      self._cfg.poll_interval_seconds, self._cfg.task_prefix,
+                      self._cfg.inbox_dir)
         while not self._stopped.is_set():
             try:
+                t0 = time.monotonic()
                 await self._poll_once()
+                _logger.debug("storage: poll cycle took %.1fs", time.monotonic() - t0)
             except Exception:
                 _logger.warning("storage poll failed, next cycle in %ds",
                                 self._cfg.poll_interval_seconds)
@@ -100,19 +111,29 @@ class StorageRunner:
 
     async def _poll_once(self) -> None:
         """One poll cycle with retry on ls()."""
+        _logger.debug("storage: ls(%s)...", self._cfg.inbox_dir)
         entries = await self._ls_with_retry()
+        _logger.debug("storage: ls → %d entries, %d seen", len(entries), len(self._seen))
+        dispatched = 0
         for entry in entries:
-            if entry.path in self._seen:
-                continue
             name = PurePosixPath(entry.path).name
+            if entry.path in self._seen:
+                _logger.debug("storage:   skip (seen) — %s", entry.path)
+                continue
             if not name.startswith(self._cfg.task_prefix):
+                _logger.debug("storage:   skip (prefix) — %s (prefix=%r)",
+                             name, self._cfg.task_prefix)
                 continue
             if ".done." in name:
+                _logger.debug("storage:   skip (.done) — %s", entry.path)
                 continue
             ext = PurePosixPath(entry.path).suffix.lower()
             if ext not in TASK_EXTENSIONS:
+                _logger.debug("storage:   skip (ext=%s) — %s", ext, entry.path)
                 continue
+            dispatched += 1
             await self._dispatch(entry)
+        _logger.debug("storage: dispatched %d/%d entries", dispatched, len(entries))
 
     async def _ls_with_retry(self) -> list[FileEntry]:
         deadline = time.monotonic() + POLL_TIMEOUT_S
@@ -160,23 +181,28 @@ class StorageRunner:
             _logger.warning("storage: download returned None — %s", entry.path)
             return
         _logger.info("storage: parsed %s (%d bytes)", entry.path, len(content))
+        _logger.debug("storage: content preview: %.200s", content)
         spec = parse_spec(content, entry.path)
         if spec is None:
-            _logger.debug("storage: skipping %s — not a valid task spec", entry.path)
+            _logger.info("storage: skipping %s — not a valid task spec", entry.path)
             self._seen.add(entry.path)
             return
+        _logger.debug("storage: spec keys=%s", list(spec))
         goal = str(spec.get("goal") or "").strip()
         if not goal:
-            _logger.debug("storage: skipping %s — missing goal", entry.path)
+            _logger.info("storage: skipping %s — missing goal", entry.path)
             self._seen.add(entry.path)
             return
         workspace = str(spec.get("workspace") or spec.get("cwd") or "").strip()
         session_id = str(spec.get("sessionId") or spec.get("session_id") or "").strip()
         if not workspace and not session_id:
-            _logger.debug("storage: skipping %s — need workspace or sessionId", entry.path)
+            _logger.info("storage: skipping %s — need workspace or sessionId (got=%r)",
+                         entry.path, spec)
             self._seen.add(entry.path)
             return
 
+        _logger.debug("storage: calling add_task(goal=%r, workspace=%r, sessionId=%r)",
+                      goal, workspace, session_id)
         # add_task touches the SQLite store — keep it on the event loop thread.
         try:
             task_id = self._harness.add_task(spec, active_session_id=session_id or None)
