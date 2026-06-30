@@ -113,7 +113,7 @@ def detect_progress_from_messages(
 # tests can reference them by name and the env var
 # OPENLOOM_NOTIFY_RECENT_MESSAGES can override the per-event N.
 RECENT_ACTIVITY_DEFAULT_N = 3
-ACTIVITY_TEXT_MAX_CHARS = 1_000
+ACTIVITY_TEXT_MAX_CHARS = 10_000
 TOOL_INPUT_EXCERPT_CHARS = 80
 
 
@@ -215,7 +215,7 @@ def recent_assistant_activity(
     notify payload:
 
         {
-          "text": "<truncated to 1000 chars>",
+          "text": "<truncated to 10000 chars>",
           "completed_at": <float epoch, 0 if unknown>,
           "tools": [{"tool": "bash", "status": "completed",
                      "input_excerpt": "..."}, ...]

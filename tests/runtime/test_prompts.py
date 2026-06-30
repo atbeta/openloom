@@ -59,10 +59,10 @@ def test_recent_activity_returns_text_completed_at_and_tools() -> None:
 
 
 def test_recent_activity_truncates_text_to_max_chars() -> None:
-    long_text = "x" * 2_000
+    long_text = "x" * 15_000
     msgs = [_assistant_message(long_text)]
     [entry] = recent_assistant_activity(msgs)
-    assert len(entry["text"]) == 1_000  # 999 chars + ellipsis
+    assert len(entry["text"]) == 10_000  # 9999 chars + ellipsis
     assert entry["text"].endswith("…")
 
 

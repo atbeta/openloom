@@ -212,6 +212,10 @@ def create_app(
         result = _run_task_command(_require_harness().delete_task, task_id)
         return result
 
+    @app.post("/api/tasks/clear-completed")
+    async def clear_completed():
+        return _require_harness().clear_completed()
+
     @app.get("/api/state")
     async def state():
         if client is None or monitor is None or settings is None:

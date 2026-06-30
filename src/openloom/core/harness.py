@@ -237,8 +237,9 @@ class HarnessRunner:
         task = self.store.get_task(task_id)
         if not task:
             raise LookupError("Task not found")
-        if str(task.get("status", "")).lower() != "archived":
-            raise ValueError("only archived tasks can be deleted")
+        status = str(task.get("status", "")).lower()
+        if status not in ("archived", "completed", "failed"):
+            raise ValueError("only completed, failed, or archived tasks can be deleted")
         name = str(task.get("name") or "")
         sv = self.store.delete_task(task_id)
         self.bus.emit(Event(
@@ -246,6 +247,21 @@ class HarnessRunner:
             task_name=name, data={"deleted": True},
         ))
         return {"ok": True, "taskId": task_id, "store_version": sv}
+
+    def clear_completed(self) -> dict[str, Any]:
+        """Delete all completed and failed tasks in one shot."""
+        deleted: list[str] = []
+        for task in self.store.list_tasks():
+            status = str(task.get("status", "")).lower()
+            if status in ("completed", "failed"):
+                tid = task["id"]
+                sv = self.store.delete_task(tid)
+                self.bus.emit(Event(
+                    type=EventType.TASK_UPDATED, task_id=tid, store_version=sv,
+                    task_name=str(task.get("name") or ""), data={"deleted": True},
+                ))
+                deleted.append(tid)
+        return {"ok": True, "deleted": len(deleted), "taskIds": deleted}
 
     def get_task(self, task_id: str) -> dict[str, Any] | None:
         return self.store.get_task(task_id)

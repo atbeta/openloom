@@ -144,6 +144,9 @@
 
   const activeTasks = $derived((state.tasks || []).filter((task) => task.status !== 'archived'));
   const archivedTasks = $derived((state.tasks || []).filter((task) => task.status === 'archived'));
+  const completedCount = $derived(
+    (state.tasks || []).filter((task) => ['completed', 'failed'].includes(task.status)).length
+  );
 
   const webhookSummary = $derived.by(() => {
     const list = state.notify?.webhooks || [];
@@ -805,11 +808,11 @@
     }
   }
 
-  async function deleteArchivedTask(taskId = null) {
+  async function deleteTask(taskId = null) {
     const id = taskId ?? drawerTask?.id ?? selectedTaskId;
     if (!id) return;
     const ok = await askConfirm({
-      title: 'Delete archived task',
+      title: 'Delete task',
       message: 'Remove this task record permanently? This cannot be undone.',
       confirmLabel: 'Delete',
       danger: true,
@@ -820,6 +823,26 @@
       const body = await response.json().catch(() => ({}));
       if (!response.ok) throw new Error(body.detail || body.error || response.statusText);
       if (drawerTaskId === id) closeTaskDrawer();
+      await refresh();
+    } catch (err) {
+      error = err instanceof Error ? err.message : String(err);
+    }
+  }
+
+  async function clearCompleted() {
+    if (completedCount === 0) return;
+    const ok = await askConfirm({
+      title: 'Clear completed tasks',
+      message: `Delete all ${completedCount} completed and failed task${completedCount === 1 ? '' : 's'}? This cannot be undone.`,
+      confirmLabel: 'Clear all',
+      danger: true,
+    });
+    if (!ok) return;
+    try {
+      const response = await fetch('/api/tasks/clear-completed', { method: 'POST' });
+      const body = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(body.detail || body.error || response.statusText);
+      if (drawerTaskId) closeTaskDrawer();
       await refresh();
     } catch (err) {
       error = err instanceof Error ? err.message : String(err);
@@ -1283,7 +1306,15 @@
         </div>
         {#if activeTasks.length > 0}
           <div class="group">
-            <div class="group-head"><span class="group-title">Tasks</span><span class="group-count">{activeTasks.length}</span></div>
+            <div class="group-head">
+              <span class="group-title">Tasks</span>
+              <span class="group-count">{activeTasks.length}</span>
+              {#if completedCount > 0}
+                <button class="btn btn-ghost btn-sm btn-danger" type="button" onclick={clearCompleted} style="margin-left: auto;">
+                  Clear {completedCount} completed
+                </button>
+              {/if}
+            </div>
             <table>
               <thead>
                 <tr>
@@ -1291,6 +1322,7 @@
                   <th>Workspace</th>
                   <th>Status</th>
                   <th>Checked</th>
+                  <th></th>
                 </tr>
               </thead>
               <tbody>
@@ -1300,6 +1332,11 @@
                     <td class="mono">{shortPath(task.workspace)}</td>
                     <td><span class={`pill ${statusClass(task.status)}`}><span class="pill-dot"></span>{task.status}</span></td>
                     <td class="mono">{updatedAgeSeconds(task) ?? '—'}</td>
+                    <td>
+                      {#if ['completed', 'failed'].includes(task.status)}
+                        <button class="btn btn-ghost btn-sm row-btn btn-danger" type="button" onclick={(e) => { e.stopPropagation(); deleteTask(task.id); }}>Delete</button>
+                      {/if}
+                    </td>
                   </tr>
                 {/each}
               </tbody>
@@ -1325,7 +1362,7 @@
                         {#if task.active_session_id}
                           <button class="btn btn-ghost btn-sm row-btn" type="button" onclick={(e) => { e.stopPropagation(); viewTaskSession(task); }}>View</button>
                         {/if}
-                        <button class="btn btn-ghost btn-sm row-btn btn-danger" type="button" onclick={(e) => { e.stopPropagation(); deleteArchivedTask(task.id); }}>Delete</button>
+                        <button class="btn btn-ghost btn-sm row-btn btn-danger" type="button" onclick={(e) => { e.stopPropagation(); deleteTask(task.id); }}>Delete</button>
                       </div>
                     </td>
                   </tr>
@@ -1535,9 +1572,13 @@
         <button class="btn btn-ghost" type="button" onclick={() => taskAction('complete', drawerTask.id)}>Complete</button>
       {/if}
       {#if drawerTask.status !== 'archived'}
-        <button class="btn btn-ghost" type="button" onclick={() => taskAction('archive', drawerTask.id)}>Archive</button>
+        {#if ['completed', 'failed'].includes(drawerTask.status)}
+          <button class="btn btn-ghost btn-danger" type="button" onclick={() => deleteTask(drawerTask.id)}>Delete</button>
+        {:else}
+          <button class="btn btn-ghost" type="button" onclick={() => taskAction('archive', drawerTask.id)}>Archive</button>
+        {/if}
       {:else}
-        <button class="btn btn-ghost btn-danger" type="button" onclick={() => deleteArchivedTask(drawerTask.id)}>Delete</button>
+        <button class="btn btn-ghost btn-danger" type="button" onclick={() => deleteTask(drawerTask.id)}>Delete</button>
       {/if}
     </footer>
   </div>
