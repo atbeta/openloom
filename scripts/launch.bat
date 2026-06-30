@@ -1,44 +1,30 @@
 @echo off
 title OpenLoom Launcher
-echo ======================
-echo   OpenLoom Launcher
-echo ======================
-echo.
 
-:: ── Check OpenCode ──────────────────────────
+:: Use OPENLOOM_OPENCODE_URL if set, or OpenLoom's default
 set OPENCODE_URL=%OPENLOOM_OPENCODE_URL%
 if "%OPENCODE_URL%"=="" set OPENCODE_URL=http://127.0.0.1:4096
 
-echo [*] Checking OpenCode (%OPENCODE_URL%)...
-curl.exe -sS -o NUL -w "%%{http_code}" "%OPENCODE_URL%/global/health" 2>NUL | findstr /r "^2" >NUL
-if %errorlevel%==0 (
-    echo [✓] OpenCode is running
-    goto :start
-)
-
-echo [!] OpenCode not reachable, trying to start...
-start "" "opencode" serve
-echo [*] Waiting for OpenCode...
-
-set tries=0
-:wait
-timeout /t 2 /nobreak >NUL
-set /a tries+=1
-curl.exe -sS -o NUL -w "%%{http_code}" "%OPENCODE_URL%/global/health" 2>NUL | findstr /r "^2" >NUL
-if %errorlevel%==0 (
-    echo [✓] OpenCode responded after %tries% attempts
-    goto :start
-)
-if %tries% lss 15 goto :wait
-
-echo [X] OpenCode still not reachable after 30s
-pause
-exit /b 1
-
-:: ── Start OpenLoom ──────────────────────────
-:start
+echo OpenLoom Launcher
+echo   OpenCode: %OPENCODE_URL%
 echo.
-echo [*] Starting OpenLoom...
-openloom serve %*
 
-if %errorlevel% neq 0 pause
+:: Simple TCP check — just see if the port answers, no path assumptions
+echo [*] Checking OpenCode...
+curl.exe -sS --max-time 3 "%OPENCODE_URL%" >NUL 2>&1
+if %errorlevel%==0 (
+    echo [✓] OpenCode reachable
+    echo.
+    openloom serve %*
+    if %errorlevel% neq 0 pause
+    exit /b
+)
+
+:: Not reachable
+echo [!] OpenCode not reachable at %OPENCODE_URL%
+echo.
+echo     Start it with: opencode serve
+echo     Or set:       set OPENLOOM_OPENCODE_URL=http://YOUR_HOST:PORT
+echo     Then re-run this script.
+echo.
+pause

@@ -1,72 +1,52 @@
 # OpenLoom Launcher — PowerShell
-# Checks for OpenCode, starts it if needed, then launches OpenLoom.
+# Checks OpenCode is reachable, then launches OpenLoom.
+# Does NOT try to auto-start OpenCode — it can't guess the port.
 
 $ErrorActionPreference = "Continue"
 
-Write-Host "======================" -ForegroundColor Cyan
-Write-Host "  OpenLoom Launcher" -ForegroundColor Cyan
-Write-Host "======================" -ForegroundColor Cyan
-Write-Host ""
-
-# ── Check OpenCode ──────────────────────────
 $opencodeUrl = $env:OPENLOOM_OPENCODE_URL
 if (-not $opencodeUrl) { $opencodeUrl = "http://127.0.0.1:4096" }
-$healthUrl = "$opencodeUrl/global/health"
 
-Write-Host "[*] Checking OpenCode ($healthUrl)..." -ForegroundColor Gray
+Write-Host "OpenLoom Launcher" -ForegroundColor Cyan
+Write-Host "  OpenCode: $opencodeUrl" -ForegroundColor DarkGray
+Write-Host ""
 
-$running = $false
+# Simple TCP check — don't assume any specific path
+Write-Host "[*] Checking OpenCode..." -ForegroundColor Gray
+$reachable = $false
 try {
-    $response = Invoke-WebRequest -Uri $healthUrl -TimeoutSec 3 -SkipCertificateCheck
-    if ($response.StatusCode -ge 200 -and $response.StatusCode -lt 300) {
-        Write-Host "[✓] OpenCode is running" -ForegroundColor Green
-        $running = $true
-    }
+    $null = Invoke-WebRequest -Uri $opencodeUrl -TimeoutSec 3 -SkipCertificateCheck
+    $reachable = $true
 } catch {
-    Write-Host "    ($($_.Exception.Message))" -ForegroundColor DarkGray
+    # 2xx/3xx/4xx all mean "it's running" — only total failure means "not reachable"
+    if ($_.Exception.Response) {
+        $reachable = $true
+    }
 }
 
-if (-not $running) {
-    Write-Host "[!] OpenCode not reachable, trying to start..." -ForegroundColor Yellow
-    Start-Process -FilePath "opencode" -ArgumentList "serve" -WindowStyle Minimized
+if ($reachable) {
+    Write-Host "[✓] OpenCode reachable" -ForegroundColor Green
+    Write-Host ""
 
-    Write-Host "[*] Waiting for OpenCode..." -ForegroundColor Gray
-    $tries = 0
-    do {
-        Start-Sleep -Seconds 2
-        $tries++
-        try {
-            $check = Invoke-WebRequest -Uri $healthUrl -TimeoutSec 3 -SkipCertificateCheck
-            if ($check.StatusCode -ge 200 -and $check.StatusCode -lt 300) {
-                Write-Host "[✓] OpenCode responded after $tries attempts" -ForegroundColor Green
-                $running = $true
-                break
-            }
-        } catch { }
-    } while ($tries -lt 15)
-
-    if (-not $running) {
-        Write-Host "[X] OpenCode still not reachable after 30 seconds" -ForegroundColor Red
-        Write-Host "    URL : $opencodeUrl"
-        Write-Host "    Test: curl.exe -sS $healthUrl"
+    $openloomExe = Get-Command openloom -ErrorAction SilentlyContinue
+    if (-not $openloomExe) {
+        Write-Host "[X] 'openloom' not found in PATH" -ForegroundColor Red
+        Write-Host "    Install: uv tool install 'openloom[ui,docx]'"
         Read-Host "Press Enter to exit"
         exit 1
     }
+
+    & openloom serve @args
+    Write-Host ""
+    Write-Host "OpenLoom exited." -ForegroundColor Yellow
+    exit 0
 }
 
-# ── Start OpenLoom ──────────────────────────
+Write-Host "[!] OpenCode not reachable at $opencodeUrl" -ForegroundColor Yellow
 Write-Host ""
-Write-Host "[*] Starting OpenLoom..." -ForegroundColor Gray
-
-$openloomExe = Get-Command openloom -ErrorAction SilentlyContinue
-if (-not $openloomExe) {
-    Write-Host "[X] 'openloom' not found in PATH" -ForegroundColor Red
-    Write-Host "    Install: uv tool install 'openloom[ui,docx]'"
-    Read-Host "Press Enter to exit"
-    exit 1
-}
-
-& openloom serve @args
-
+Write-Host "    Start it with:  opencode serve"
+Write-Host "    Or set:         `$env:OPENLOOM_OPENCODE_URL = 'http://YOUR_HOST:PORT'"
+Write-Host "    Then re-run this script."
 Write-Host ""
-Write-Host "OpenLoom exited." -ForegroundColor Yellow
+Read-Host "Press Enter to exit"
+exit 1
