@@ -8,11 +8,14 @@ from __future__ import annotations
 
 import io
 import json
+import logging
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Any
 
 TASK_EXTENSIONS = frozenset({".json", ".yaml", ".yml", ".docx"})
+
+_logger = logging.getLogger("openloom.storage")
 
 _RESULT_SUFFIX_BY_EXT: dict[str, str] = {
     ".json": ".result.json",
@@ -41,6 +44,16 @@ def parse_spec(raw: bytes, filepath: str) -> dict[str, Any] | None:
             data = yaml.safe_load(raw)
             return data if isinstance(data, dict) else None
         if ext == ".docx":
+            try:
+                from docx import Document  # noqa: F401
+            except ImportError:
+                _logger.error(
+                    "parse_spec: %s is a .docx file but python-docx is not installed. "
+                    "Run: uv tool install openloom --with python-docx  or  "
+                    "pip install openloom[docx]",
+                    filepath,
+                )
+                return None
             return _parse_docx(raw)
     except Exception:
         return None

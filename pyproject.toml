@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "openloom"
-version = "0.15.10"
+version = "0.15.11"
 description = "OpenLoom: a lightweight agent task harness — schedule, monitor, and verify AI coding tasks."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -37,6 +37,9 @@ ui       = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "sse-starlette"]
 validate = []
 github   = ["PyGithub>=2.0"]
 server   = ["fastapi>=0.115", "uvicorn[standard]>=0.30", "sse-starlette"]
+docx     = [
+    "python-docx>=1.0",
+]
 
 [project.scripts]
 openloom = "openloom.cli:main"
