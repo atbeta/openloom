@@ -7,6 +7,15 @@ result files back to storage.
 The runner replaces the ``openloom-connector`` standalone process.
 Internally it talks to the ``EventBus`` directly instead of going
 through HTTP webhooks — no listener port, no webhook URL config.
+
+**Architecture note:** the entire poll loop runs synchronously inside
+``asyncio.to_thread``, just like the original ``openloom-connector``.
+Connector implementations (WeLink, corporate drives) often have
+thread-affinity guarantees — keeping all connector calls on a single
+background thread avoids subtle races with HTTP session pools,
+non-reentrant clients, and other per-thread state.  EventBus handlers
+receive events on the asyncio loop and schedule connector I/O
+(upload / move / delete) back to the same thread pool.
 """
 
 from __future__ import annotations
@@ -38,11 +47,16 @@ STATUS_INTERVAL_S = 30.0   # minimum seconds between status writes for same task
 POLL_RETRY_MAX = 3          # retries for connector.ls()
 POLL_RETRY_DELAY_S = 2.0    # delay between ls retries
 POLL_TIMEOUT_S = 30.0       # per-poll-cycle deadline
-DOWNLOAD_TIMEOUT_S = 60.0  # max seconds for connector.download
 
 
 class StorageRunner:
-    """Polls inbox → harness.add_task → EventBus → write-back."""
+    """Polls inbox → harness.add_task → EventBus → write-back.
+
+    The poll loop runs synchronously inside ``asyncio.to_thread`` so
+    connector calls (which may use blocking HTTP, file I/O, or
+    thread-local state) stay on a single background thread — just
+    like the original ``openloom-connector`` process.
+    """
 
     def __init__(
         self,
@@ -81,38 +95,57 @@ class StorageRunner:
         self._bus.subscribe(EventType.TASK_FAILED, self._on_task_terminal)
 
         try:
-            await self._poll_loop()
+            # Entire poll loop runs synchronously in a background thread —
+            # same architecture as the original openloom-connector.
+            await asyncio.to_thread(self._poll_sync)
         finally:
             self._bus.unsubscribe(EventType.TASK_UPDATED, self._on_task_updated)
             self._bus.unsubscribe(EventType.TASK_COMPLETED, self._on_task_terminal)
             self._bus.unsubscribe(EventType.TASK_FAILED, self._on_task_terminal)
 
-    # ── poll loop ────────────────────────────────────────────────────────
+    # ── synchronous poll loop (runs in asyncio.to_thread) ────────────────
 
-    async def _poll_loop(self) -> None:
-        _logger.debug("storage: poll loop started, interval=%ds prefix=%r inbox=%s",
-                      self._cfg.poll_interval_seconds, self._cfg.task_prefix,
-                      self._cfg.inbox_dir)
+    def _poll_sync(self) -> None:
+        """Blocking poll loop — runs inside ``asyncio.to_thread``.
+
+        All connector calls (download, upload, move, delete) are
+        synchronous and run on this thread.  SQLite is configured
+        with WAL + check_same_thread=False, so ``harness.add_task``
+        is also safe to call from here.
+        """
+        _logger.debug(
+            "storage: poll sync started, interval=%ds prefix=%r inbox=%s",
+            self._cfg.poll_interval_seconds, self._cfg.task_prefix,
+            self._cfg.inbox_dir,
+        )
         while not self._stopped.is_set():
+            t0 = time.monotonic()
             try:
-                t0 = time.monotonic()
-                await self._poll_once()
+                self._poll_once()
                 _logger.debug("storage: poll cycle took %.1fs", time.monotonic() - t0)
             except Exception:
-                _logger.warning("storage poll failed, next cycle in %ds",
-                                self._cfg.poll_interval_seconds)
-            try:
-                await asyncio.wait_for(
-                    self._stopped.wait(),
-                    timeout=self._cfg.poll_interval_seconds,
+                _logger.warning(
+                    "storage: poll failed, next cycle in %ds",
+                    self._cfg.poll_interval_seconds,
                 )
-            except TimeoutError:
-                pass
+            self._stopped.wait(timeout=self._cfg.poll_interval_seconds)
 
-    async def _poll_once(self) -> None:
-        """One poll cycle with retry on ls()."""
+    def _poll_once(self) -> None:
+        """One synchronous poll cycle: ls inbox, dispatch new task files."""
         _logger.debug("storage: ls(%s)...", self._cfg.inbox_dir)
-        entries = await self._ls_with_retry()
+        entries: list[FileEntry] = []
+        for attempt in range(POLL_RETRY_MAX):
+            try:
+                entries = self._connector.ls(self._cfg.inbox_dir)
+                break
+            except Exception as exc:
+                _logger.warning(
+                    "storage: ls failed (attempt %d/%d): %s",
+                    attempt + 1, POLL_RETRY_MAX, exc,
+                )
+                if attempt < POLL_RETRY_MAX - 1:
+                    time.sleep(POLL_RETRY_DELAY_S)
+
         _logger.debug("storage: ls → %d entries, %d seen", len(entries), len(self._seen))
         dispatched = 0
         for entry in entries:
@@ -132,48 +165,14 @@ class StorageRunner:
                 _logger.debug("storage:   skip (ext=%s) — %s", ext, entry.path)
                 continue
             dispatched += 1
-            await self._dispatch(entry)
+            self._dispatch(entry)
         _logger.debug("storage: dispatched %d/%d entries", dispatched, len(entries))
 
-    async def _ls_with_retry(self) -> list[FileEntry]:
-        deadline = time.monotonic() + POLL_TIMEOUT_S
-        last_exc: Exception | None = None
-        for attempt in range(POLL_RETRY_MAX):
-            try:
-                return await asyncio.wait_for(
-                    asyncio.to_thread(self._connector.ls, self._cfg.inbox_dir),
-                    timeout=min(POLL_TIMEOUT_S, deadline - time.monotonic()),
-                )
-            except TimeoutError:
-                _logger.warning("storage.ls timed out (attempt %d/%d)",
-                                attempt + 1, POLL_RETRY_MAX)
-                last_exc = TimeoutError("ls deadline exceeded")
-            except Exception as exc:
-                _logger.warning("storage.ls failed (attempt %d/%d): %s",
-                                attempt + 1, POLL_RETRY_MAX, exc)
-                last_exc = exc
-            if attempt < POLL_RETRY_MAX - 1:
-                await asyncio.sleep(POLL_RETRY_DELAY_S)
-        raise last_exc or RuntimeError("ls retries exhausted")
-
-    # ── dispatch ─────────────────────────────────────────────────────────
-
-    async def _dispatch(self, entry: FileEntry) -> None:
-        """Download task file → parse → add to harness.
-
-        Only ``connector.download`` runs in a thread (external IO).
-        ``harness.add_task`` stays on the event loop — it touches the
-        SQLite store which is not thread-safe.
-        """
+    def _dispatch(self, entry: FileEntry) -> None:
+        """Download → parse → push to harness. All synchronous."""
         _logger.info("storage: download %s...", entry.path)
         try:
-            content = await asyncio.wait_for(
-                asyncio.to_thread(self._connector.download, entry.path),
-                timeout=DOWNLOAD_TIMEOUT_S,
-            )
-        except TimeoutError:
-            _logger.warning("storage: download timed out — %s", entry.path)
-            return
+            content = self._connector.download(entry.path)
         except Exception:
             _logger.exception("storage: download failed — %s", entry.path)
             return
@@ -181,13 +180,15 @@ class StorageRunner:
             _logger.warning("storage: download returned None — %s", entry.path)
             return
         _logger.info("storage: parsed %s (%d bytes)", entry.path, len(content))
-        _logger.debug("storage: content preview: %.200s", content)
+        _logger.debug("storage: content preview: %.200r", content[:200])
+
         spec = parse_spec(content, entry.path)
         if spec is None:
             _logger.info("storage: skipping %s — not a valid task spec", entry.path)
             self._seen.add(entry.path)
             return
         _logger.debug("storage: spec keys=%s", list(spec))
+
         goal = str(spec.get("goal") or "").strip()
         if not goal:
             _logger.info("storage: skipping %s — missing goal", entry.path)
@@ -203,7 +204,6 @@ class StorageRunner:
 
         _logger.debug("storage: calling add_task(goal=%r, workspace=%r, sessionId=%r)",
                       goal, workspace, session_id)
-        # add_task touches the SQLite store — keep it on the event loop thread.
         try:
             task_id = self._harness.add_task(spec, active_session_id=session_id or None)
         except Exception:
@@ -217,7 +217,7 @@ class StorageRunner:
         _logger.info("storage: task %s ← %s (workspace=%r sessionId=%r)",
                      task_id, entry.path, workspace, session_id)
 
-    # ── EventBus handlers ────────────────────────────────────────────────
+    # ── EventBus handlers (on asyncio loop) ──────────────────────────────
 
     def _on_task_updated(self, event: Event) -> None:
         """Fire-and-forget: schedule async handler to avoid blocking EventBus."""
@@ -321,7 +321,6 @@ class StorageRunner:
         """Move source to archive/done, delete status file. All IO in thread."""
         name = PurePosixPath(source_file).name
         stem = PurePosixPath(source_file).stem
-        ext = PurePosixPath(source_file).suffix
         status_name = f"{stem}{status_suffix(source_file)}"
         status_path = f"{self._cfg.outbox_dir}/{status_name}"
 
@@ -340,7 +339,7 @@ class StorageRunner:
             except Exception:
                 _logger.debug("storage: status cleanup skipped (may not exist): %s", status_path)
         else:
-            done_name = f"{stem}.done{ext}"
+            done_name = f"{stem}.done{ext}" if (ext := PurePosixPath(source_file).suffix) else f"{stem}.done"
             done_path = f"{self._cfg.inbox_dir}/{done_name}"
             try:
                 await asyncio.to_thread(self._connector.move, source_file, done_path)
