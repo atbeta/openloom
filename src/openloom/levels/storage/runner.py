@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from functools import partial
 from pathlib import PurePosixPath
 from typing import Any
 
@@ -41,13 +42,7 @@ POLL_TIMEOUT_S = 30.0       # per-poll-cycle deadline
 
 
 class StorageRunner:
-    """Polls inbox → harness.add_task → EventBus → write-back.
-
-    Lifecycle:
-      1. ``start()`` — register on EventBus, begin poll loop
-      2. ``stop()`` — set stopped flag, poll loop exits cleanly
-      3. ``run()`` — async entry point
-    """
+    """Polls inbox → harness.add_task → EventBus → write-back."""
 
     def __init__(
         self,
@@ -112,13 +107,12 @@ class StorageRunner:
             name = PurePosixPath(entry.path).name
             if not name.startswith(self._cfg.task_prefix):
                 continue
-            # Skip already-done files (inbox rename)
             if ".done." in name:
                 continue
             ext = PurePosixPath(entry.path).suffix.lower()
             if ext not in TASK_EXTENSIONS:
                 continue
-            self._dispatch(entry)
+            await self._dispatch(entry)
 
     async def _ls_with_retry(self) -> list[FileEntry]:
         deadline = time.monotonic() + POLL_TIMEOUT_S
@@ -143,8 +137,9 @@ class StorageRunner:
 
     # ── dispatch ─────────────────────────────────────────────────────────
 
-    def _dispatch(self, entry: FileEntry) -> None:
-        content = self._connector.download(entry.path)
+    async def _dispatch(self, entry: FileEntry) -> None:
+        """Download task file → parse → add to harness. All IO in thread."""
+        content = await asyncio.to_thread(self._connector.download, entry.path)
         if content is None:
             return
         spec = parse_spec(content, entry.path)
@@ -164,8 +159,9 @@ class StorageRunner:
             self._seen.add(entry.path)
             return
 
-        # Add through harness directly — no HTTP webhook needed.
-        task_id = self._harness.add_task(spec, active_session_id=session_id or None)
+        task_id = await asyncio.to_thread(
+            partial(self._harness.add_task, spec, active_session_id=session_id or None),
+        )
         if task_id:
             self._seen.add(entry.path)
             self._task_file[task_id] = entry.path
@@ -175,20 +171,25 @@ class StorageRunner:
     # ── EventBus handlers ────────────────────────────────────────────────
 
     def _on_task_updated(self, event: Event) -> None:
+        """Fire-and-forget: schedule async handler to avoid blocking EventBus."""
+        asyncio.create_task(self._a_on_task_updated(event))
+
+    async def _a_on_task_updated(self, event: Event) -> None:
         task_id = event.task_id
         if task_id not in self._task_file:
             return
 
         data = event.data if isinstance(event.data, dict) else {}
         status = str(data.get("status") or "running")
-
-        # Enrich with recent_activity for human-readable status files.
         enriched = {**data}
-
         now = time.time()
-        self._write_status(task_id, event.task_name, status, enriched, now)
+        await self._a_write_status(task_id, event.task_name, status, enriched, now)
 
     def _on_task_terminal(self, event: Event) -> None:
+        """Fire-and-forget: schedule async handler to avoid blocking EventBus."""
+        asyncio.create_task(self._a_on_task_terminal(event))
+
+    async def _a_on_task_terminal(self, event: Event) -> None:
         task_id = event.task_id
         source_file = self._task_file.pop(task_id, None)
         if source_file is None:
@@ -207,7 +208,7 @@ class StorageRunner:
             "data": data,
         }
 
-        # Write result file.
+        # Write result file in thread.
         stem = PurePosixPath(source_file).stem
         suffix = result_suffix(source_file)
         out_name = f"{self._cfg.task_prefix}{_drop_prefix(stem, self._cfg.task_prefix)}{suffix}"
@@ -215,18 +216,17 @@ class StorageRunner:
 
         try:
             content = render_result(payload, source_file)
-            self._connector.upload(out_path, content)
+            await asyncio.to_thread(self._connector.upload, out_path, content)
             _logger.info("storage: result written → %s (%s)", out_path, status)
         except Exception:
             _logger.exception("storage: result upload failed: %s", out_path)
 
-        # Clean up source + status files.
-        self._cleanup(source_file)
+        await self._a_cleanup(source_file)
         self._last_status.pop(task_id, None)
 
     # ── status write (throttled) ─────────────────────────────────────────
 
-    def _write_status(
+    async def _a_write_status(
         self, task_id: str, task_name: str, status: str,
         data: dict[str, Any], now: float,
     ) -> None:
@@ -254,12 +254,12 @@ class StorageRunner:
             "timestamp": now,
             "timestamp_iso": _iso_utc(now),
             "summary": str(data.get("summary") or ""),
-            "data": data,   # includes recent_activity from OpenLoom event
+            "data": data,
         }
 
         try:
             content = render_status(payload, source_file)
-            self._connector.upload(out_path, content)
+            await asyncio.to_thread(self._connector.upload, out_path, content)
             self._last_status[task_id] = (status, now)
             reason = "changed" if changed else "throttle_expired"
             _logger.debug("storage: status → %s (%s, reason=%s)", out_path, status, reason)
@@ -268,8 +268,8 @@ class StorageRunner:
 
     # ── cleanup ──────────────────────────────────────────────────────────
 
-    def _cleanup(self, source_file: str) -> None:
-        """Move source to archive/done, delete status file."""
+    async def _a_cleanup(self, source_file: str) -> None:
+        """Move source to archive/done, delete status file. All IO in thread."""
         name = PurePosixPath(source_file).name
         stem = PurePosixPath(source_file).stem
         ext = PurePosixPath(source_file).suffix
@@ -277,27 +277,29 @@ class StorageRunner:
         status_path = f"{self._cfg.outbox_dir}/{status_name}"
 
         if self._cfg.archive_dir:
-            # Archive source + status
             try:
-                self._connector.move(source_file, f"{self._cfg.archive_dir}/{name}")
+                await asyncio.to_thread(
+                    self._connector.move, source_file, f"{self._cfg.archive_dir}/{name}",
+                )
                 _logger.debug("storage: archived → %s/%s", self._cfg.archive_dir, name)
             except Exception:
                 _logger.warning("storage: archive failed for %s", source_file)
             try:
-                self._connector.move(status_path, f"{self._cfg.archive_dir}/{status_name}")
+                await asyncio.to_thread(
+                    self._connector.move, status_path, f"{self._cfg.archive_dir}/{status_name}",
+                )
             except Exception:
                 _logger.debug("storage: status cleanup skipped (may not exist): %s", status_path)
         else:
-            # Rename source in-place, delete status
             done_name = f"{stem}.done{ext}"
             done_path = f"{self._cfg.inbox_dir}/{done_name}"
             try:
-                self._connector.move(source_file, done_path)
+                await asyncio.to_thread(self._connector.move, source_file, done_path)
                 _logger.debug("storage: renamed → %s", done_path)
             except Exception:
                 _logger.warning("storage: inline-done rename failed for %s", source_file)
             try:
-                self._connector.delete(status_path)
+                await asyncio.to_thread(self._connector.delete, status_path)
             except Exception:
                 _logger.debug("storage: status delete skipped: %s", status_path)
 
