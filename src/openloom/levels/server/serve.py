@@ -38,18 +38,31 @@ async def run_serve(
 
     health = await client.health()
     if not health.ok:
-        print(
-            format_opencode_unreachable_help(settings.opencode_url, detail=health.message),
-            file=sys.stderr,
-        )
-        print(
-            "OpenLoom will keep running; connect OpenCode above, then refresh the dashboard.",
-            file=sys.stderr,
-        )
+        if settings.opencode_auto_start:
+            print("OpenCode not found; auto-starting...")
+            _start_opencode(settings)
+            await asyncio.sleep(2)
+            health = await client.health()
+        if not health.ok:
+            print(
+                format_opencode_unreachable_help(settings.opencode_url, detail=health.message),
+                file=sys.stderr,
+            )
+            print(
+                "OpenLoom will keep running; connect OpenCode above, then refresh the dashboard.",
+                file=sys.stderr,
+            )
 
     monitor = SessionMonitor(client)
 
     await monitor.refresh()
+
+    # ── storage runner ──
+    storage_task: asyncio.Task[Any] | None = None
+    if settings.storage.enabled:
+        from openloom.levels.storage import StorageRunner
+        storage_runner = StorageRunner(settings.storage, bus, harness)
+        storage_task = asyncio.create_task(storage_runner.run(), name="openloom-storage")
 
     async def harness_loop():
         while True:
@@ -84,6 +97,10 @@ async def run_serve(
     n_webhooks = len(settings.notify.webhooks)
     if n_webhooks:
         print(f"  notify:   {n_webhooks} webhook(s)")
+    if settings.storage.enabled:
+        print(f"  storage:  {settings.storage.connector_class.__name__}")
+        print(f"    inbox:  {settings.storage.inbox_dir}")
+        print(f"    outbox: {settings.storage.outbox_dir}")
 
     from openloom.core.registry import list_sources
     sources = list_sources()
@@ -98,13 +115,34 @@ async def run_serve(
 
     try:
         await server.serve()
+    except KeyboardInterrupt:
+        print("\nShutting down...")
     finally:
+        if storage_task is not None:
+            storage_runner.stop()  # type: ignore[possibly-unbound]
+            storage_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await storage_task
         harness_task.cancel()
         monitor_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await harness_task
         with contextlib.suppress(asyncio.CancelledError):
             await monitor_task
+
+
+def _start_opencode(settings: Any) -> None:
+    """Spawn OpenCode as a background subprocess."""
+    import subprocess
+    url = settings.opencode_url.rstrip("/")
+    port = url.split(":")[-1] if ":" in url else "4096"
+    subprocess.Popen(
+        ["opencode", "serve", "--port", port],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    print(f"  opencode  spawned on port {port}")
 
 
 def _native_pick_folder(initial: str | None = None) -> str | None:

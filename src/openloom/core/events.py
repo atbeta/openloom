@@ -51,6 +51,12 @@ class EventBus:
     def subscribe(self, event_type: EventType, handler: Callable[[Event], None]) -> None:
         self._subscribers[event_type].append(handler)
 
+    def unsubscribe(self, event_type: EventType, handler: Callable[[Event], None]) -> None:
+        try:
+            self._subscribers[event_type].remove(handler)
+        except ValueError:
+            pass
+
     def subscribe_all(self, handler: Callable[[Event], None]) -> None:
         self._wildcards.append(handler)
 

@@ -7,6 +7,7 @@ from typing import Any
 
 from openloom.core.notify_config import NotifyConfig
 from openloom.core.settings_source import load_config_file
+from openloom.levels.storage.config import StorageConfig
 
 
 @dataclass(frozen=True)
@@ -41,6 +42,10 @@ class Settings:
     # to keep the previous behaviour and route every permission
     # through /api/permissions for manual approval.
     auto_accept_permissions: bool = True
+    # Auto-start OpenCode if unreachable at startup.
+    opencode_auto_start: bool = False
+    # Storage connector for file-based task dispatch.
+    storage: StorageConfig = field(default_factory=StorageConfig.empty)
 
     @classmethod
     def from_env(cls) -> Settings:
@@ -130,6 +135,14 @@ class Settings:
                 harness.get("auto_accept_permissions"),
                 "OPENLOOM_AUTO_ACCEPT_PERMISSIONS",
                 default=True,
+            ),
+            opencode_auto_start=_bool_or_env(
+                opencode.get("auto_start"),
+                "OPENLOOM_OPENCODE_AUTO_START",
+                default=False,
+            ),
+            storage=StorageConfig.from_mapping(
+                file_cfg.get("storage") if isinstance(file_cfg, dict) else None
             ),
         )
 
