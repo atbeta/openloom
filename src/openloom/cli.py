@@ -119,7 +119,7 @@ def main() -> None:
     serve_p.add_argument("--host", help="Bind host (default: 127.0.0.1)")
     serve_p.add_argument("--port", type=int, help="Bind port (default: 55413)")
 
-    init_p = sub.add_parser(
+    sub.add_parser(
         "init", help="Write ~/.openloom/config.yaml and connector example",
     )
 
