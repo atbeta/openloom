@@ -10,8 +10,11 @@ from typing import Any
 
 from .base import Connector
 
-# Path where user connector classes live — added to sys.path automatically.
-USER_CONNECTORS_DIR = Path.home() / ".openloom" / "connectors"
+# Paths where user connector classes live — added to sys.path automatically.
+_USER_CONNECTORS_DIRS = [
+    Path.home() / ".openloom" / "connectors",  # pip / uv tool install
+    Path("connectors"),                            # portable / zip deployment
+]
 
 
 @dataclass(frozen=True)
@@ -74,11 +77,13 @@ class StorageConfig:
 
 
 def _ensure_connectors_path() -> None:
-    if not USER_CONNECTORS_DIR.exists():
-        USER_CONNECTORS_DIR.mkdir(parents=True, exist_ok=True)
-    sys_path = str(USER_CONNECTORS_DIR.resolve())
-    if sys_path not in sys.path:
-        sys.path.insert(0, sys_path)
+    for d in _USER_CONNECTORS_DIRS:
+        d_abs = d.resolve()
+        if not d_abs.exists():
+            d.mkdir(parents=True, exist_ok=True)
+        sys_path = str(d_abs)
+        if sys_path not in sys.path:
+            sys.path.insert(0, sys_path)
 
 
 def _import_class(dotted: str) -> type:

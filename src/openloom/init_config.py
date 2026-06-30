@@ -87,6 +87,8 @@ For simple local-disk use, no connector code is needed:
       kwargs:
         root: /path/to/watch
       inbox: inbox
+
+Connector lookup: ~/.openloom/connectors/ (pip install) or ./connectors/ (portable zip).
 """
 
 from openloom.levels.storage.base import Connector, FileEntry
