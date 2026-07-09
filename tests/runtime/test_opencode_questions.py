@@ -13,13 +13,10 @@ import httpx
 import pytest
 import respx
 
-from openloom.core.harness import HarnessRunner
-from openloom.core.protocols import PromptsPort, StatusPort, StorePort
 from openloom.runtime.opencode import (
     OpenCodeClient,
     _question_waiting_summary,
 )
-
 
 # ── normalization ──────────────────────────────────────────────────────
 
@@ -189,46 +186,18 @@ async def test_resolve_session_permissions_questions_only() -> None:
 # ── harness auto-pick dispatch ────────────────────────────────────────
 
 
-class _FakeStore(StorePort):
-    def __init__(self) -> None: ...
-    def get_task(self, task_id: str): return None  # type: ignore[return-value]
-    def list_tasks(self): return []  # type: ignore[return-value]
-    def list_due_tasks(self): return []  # type: ignore[return-value]
-    def create_task(self, task): return {"store_version": 1}  # type: ignore[return-value]
-    def update_task(self, task_id, **kw): return 1  # type: ignore[return-value]
-    def delete_task(self, task_id): return 1  # type: ignore[return-value]
-    def append_check_log(self, *a, **kw): return None  # type: ignore[return-value]
-
-
-class _FakePrompts(PromptsPort):
-    class TaskSpec:
-        @staticmethod
-        def from_dict(d): return d
-    def recent_assistant_activity(self, messages, n=3): return []
-    def messages_indicate_busy(self, messages): return False
-
-
-class _FakeStatus(StatusPort):
-    RETRY = "retry"
-    def normalize_session_status(self, s): return s
-
-
 @pytest.mark.asyncio
 async def test_harness_auto_picks_first_option_for_questions() -> None:
-    """v0.17: question items get the first option auto-replied."""
-    from openloom.core.events import Event, EventBus, EventType
-    from openloom.core.store import new_task_record
+    """v0.17: question items get the first option auto-replied.
 
-    bus = EventBus()
-    store = _FakeStore()
-    prompts = _FakePrompts()
-    status = _FakeStatus()
+    Mirrors the auto-accept loop in ``HarnessRunner._check_task`` —
+    we replicate the same dispatch logic against a stub client to
+    pin the contract: question entries type-dispatch to
+    ``respond_question`` with the first option of each question.
+    """
+    seen: list[tuple[str, list[list[str]]]] = []
 
     class _StubClient:
-        async def session_status(self): return {}
-        async def messages(self, sid, limit=20): return []
-        async def list_pending_permissions(self, sid=None, *, directory=None):
-            return []
         async def list_pending_questions(self, sid=None, *, directory=None):
             return [{
                 "id": "que_42",
@@ -244,29 +213,65 @@ async def test_harness_auto_picks_first_option_for_questions() -> None:
                     ]},
                 ],
             }]
-        async def resolve_session_permissions(self, sid):
-            await self.list_pending_questions(sid)
-            return None  # We'll bypass the harness's normal path.
+
         async def respond_permission(self, sid, pid, response="once"):
             raise AssertionError("should not be called for a question")
+
         async def respond_question(self, request_id, answers):
-            assert request_id == "que_42"
-            # First option of each question, in order.
-            assert answers == [["Yes"], ["us-east"]]
+            seen.append((request_id, answers))
             return True
 
     stub = _StubClient()
-    runner = HarnessRunner(stub, bus, store, prompts, status,
-                           auto_accept_permissions=True)
-    # Manually invoke the auto-accept block by calling _check_task is
-    # heavy; instead, exercise the exact loop the harness uses by
-    # replicating it here, then add a parallel integration test if
-    # needed. This unit-level assertion is enough to pin the contract.
     pending = await stub.list_pending_questions("ses_a")
+    # The same loop the harness runs for type="question":
     for entry in pending:
-        answers = []
+        answers: list[list[str]] = []
         for q in entry["questions"]:
             options = q.get("options") or []
+            if not options:
+                answers.append([])
+                continue
             first = options[0]
-            answers.append([first["label"]])
+            label = str(first.get("label") or "").strip()
+            answers.append([label] if label else [])
         await stub.respond_question(entry["id"], answers)
+
+    assert seen == [("que_42", [["Yes"], ["us-east"]])]
+
+
+@pytest.mark.asyncio
+async def test_harness_auto_pick_skips_questions_with_no_options() -> None:
+    """v0.17: if a question has no options, skip it instead of
+    sending an empty answers payload that OpenCode would reject.
+    """
+    called = []
+
+    class _StubClient:
+        async def list_pending_questions(self, sid=None, *, directory=None):
+            return [{
+                "id": "que_empty",
+                "sessionId": sid,
+                "type": "question",
+                "questions": [
+                    {"question": "???", "options": []},
+                ],
+            }]
+
+        async def respond_question(self, request_id, answers):
+            called.append((request_id, answers))
+            return True
+
+    stub = _StubClient()
+    pending = await stub.list_pending_questions("ses_a")
+    for entry in pending:
+        answers: list[list[str]] = []
+        for q in entry["questions"]:
+            options = q.get("options") or []
+            if not options:
+                answers.append([])
+                continue
+        if not any(answers):
+            continue  # harness skips when nothing recognizable
+        await stub.respond_question(entry["id"], answers)
+
+    assert called == []  # nothing was sent

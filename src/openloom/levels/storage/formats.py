@@ -10,7 +10,7 @@ import io
 import json
 import logging
 import os
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import PurePosixPath
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -38,8 +38,9 @@ def _resolve_tz() -> ZoneInfo | None:
         except Exception:
             pass  # bad name → fall through to config / default
     try:
-        from openloom.core.settings_source import find_config_file
         import yaml
+
+        from openloom.core.settings_source import find_config_file
         cfg_path = find_config_file()
         if cfg_path is not None:
             raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
