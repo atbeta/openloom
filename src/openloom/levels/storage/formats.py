@@ -9,11 +9,46 @@ from __future__ import annotations
 import io
 import json
 import logging
+import os
 from datetime import UTC, datetime
 from pathlib import PurePosixPath
 from typing import Any
+from zoneinfo import ZoneInfo
 
 TASK_EXTENSIONS = frozenset({".json", ".yaml", ".yml", ".docx"})
+
+
+def _resolve_tz() -> ZoneInfo | None:
+    """Resolve the display timezone for docx timestamps.
+
+    Order: env ``OPENLOOM_TIMEZONE`` > config file's ``harness.timezone``
+    > system local. Default to system local — openloom usually runs on
+    the operator's own machine, so the docx is for the operator, and
+    the operator's wall-clock is what they expect to see. Override
+    only when needed.
+
+    Returns ``None`` when the system local timezone should be used;
+    in that case ``datetime.fromtimestamp(ts, tz=None)`` falls through
+    to the platform's ``localtime`` (per CPython docs since 3.6).
+    """
+    env = os.getenv("OPENLOOM_TIMEZONE", "").strip()
+    if env:
+        try:
+            return ZoneInfo(env)
+        except Exception:
+            pass  # bad name → fall through to config / default
+    try:
+        from openloom.core.settings_source import find_config_file
+        import yaml
+        cfg_path = find_config_file()
+        if cfg_path is not None:
+            raw = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+            name = (raw.get("harness") or {}).get("timezone")
+            if name:
+                return ZoneInfo(str(name))
+    except Exception:
+        pass
+    return None
 
 _logger = logging.getLogger("openloom.storage")
 
@@ -219,7 +254,7 @@ def _docx_meta_block(doc: Any, payload: dict[str, Any]) -> None:
     if task_id:
         lines.append(f"任务 ID: {task_id}")
     if isinstance(timestamp, (int, float)) and timestamp > 0:
-        iso = datetime.fromtimestamp(timestamp, tz=UTC).strftime("%Y-%m-%d %H:%M:%S")
+        iso = datetime.fromtimestamp(timestamp, tz=_resolve_tz()).strftime("%Y-%m-%d %H:%M:%S")
         lines.append(f"时间: {iso}")
     if lines:
         para = doc.add_paragraph()
@@ -238,7 +273,7 @@ def _docx_trace(doc: Any, recent: list[Any]) -> None:
         completed = entry.get("completed_at")
         if isinstance(completed, (int, float)) and completed > 0:
             ts = datetime.fromtimestamp(
-                completed / 1000 if completed > 1e12 else completed, tz=UTC,
+                completed / 1000 if completed > 1e12 else completed, tz=_resolve_tz(),
             ).strftime("%H:%M:%S")
         head = doc.add_paragraph()
         head_run = head.add_run(f"{idx}. {ts}".rstrip())
