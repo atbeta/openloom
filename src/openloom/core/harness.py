@@ -358,25 +358,62 @@ class HarnessRunner:
             status = permission["status"]
             summary = permission["summary"]
             if self.auto_accept_permissions:
-                # Auto-answer every pending prompt with "once" so the
-                # agent can keep working without an operator clicking
-                # through the dashboard. We do this *before* falling
-                # through to the running/busy check below because, in
+                # Auto-answer every pending prompt so the agent can
+                # keep working without an operator clicking through
+                # the dashboard. We do this *before* falling through
+                # to the running/busy check below because, in
                 # practice, the permission is the only thing keeping
                 # the session idle — accepting it makes the next tick
                 # see the agent back in flight.
+                #
+                # v0.17 dispatch:
+                #   * type="permission" → respond_permission(..., "once")
+                #   * type="question"   → respond_question(..., first option per q)
+                # Tool permissions are the safe "once" allow; real
+                # questions get the first option per OpenCode
+                # convention (Option schema has no "recommended" field).
                 for entry in permission.get("pending") or ():
-                    perm_id = str(entry.get("id") or "")
-                    if not perm_id:
+                    entry_id = str(entry.get("id") or "")
+                    if not entry_id:
                         continue
+                    entry_type = str(entry.get("type") or "permission")
+                    if entry_type == "question":
+                        answers: list[list[str]] = []
+                        for q in entry.get("questions") or ():
+                            if not isinstance(q, dict):
+                                answers.append([])
+                                continue
+                            options = q.get("options") or []
+                            if not isinstance(options, list) or not options:
+                                answers.append([])
+                                continue
+                            first = options[0]
+                            label = (
+                                str(first.get("label") or "").strip()
+                                if isinstance(first, dict) else ""
+                            )
+                            answers.append([label] if label else [])
+                        if not any(answers):
+                            continue  # no recognizable choices → leave it
+                        try:
+                            await self.opencode.respond_question(
+                                entry_id, answers,
+                            )
+                        except Exception:
+                            _logger.warning(
+                                "auto-accept failed for question %s on session %s",
+                                entry_id, session_id,
+                            )
+                        continue
+                    # Default: tool permission, respond "once".
                     try:
                         await self.opencode.respond_permission(
-                            session_id, perm_id,
+                            session_id, entry_id,
                         )
                     except Exception:
                         _logger.warning(
                             "auto-accept failed for permission %s on session %s",
-                            perm_id, session_id,
+                            entry_id, session_id,
                         )
         elif is_busy:
             status = "running"

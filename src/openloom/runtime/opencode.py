@@ -12,6 +12,29 @@ import httpx
 from .prompts import permission_waiting_summary
 from .session_status import BUSY, RETRY, extract_status_type
 
+
+def _question_waiting_summary(questions: list[dict[str, Any]]) -> str:
+    """Render a one-line summary for a list of pending question items.
+
+    Mirrors ``permission_waiting_summary`` for the question request
+    type. Returns a short description with the first question's text
+    so the dashboard / status.docx can show what the agent is asking
+    without dumping the full payload.
+    """
+    if not questions:
+        return "Waiting for question answer"
+    first = questions[0]
+    raw = first.get("questions") or []
+    if isinstance(raw, list) and raw and isinstance(raw[0], dict):
+        text = str(raw[0].get("question") or "question").strip()
+    else:
+        text = "question"
+    extra = len(questions) - 1
+    base = f"Question: {text[:80]}"
+    if extra > 0:
+        base += f" (+{extra} more)"
+    return base
+
 PROJECT_CACHE_TTL_SECONDS = 10.0
 MAX_MESSAGES_PER_SESSION = 5000  # backfill ceiling for very long sessions
 BACKFILL_CONCURRENCY = 8  # max simultaneous _fetch_all_messages in flight
@@ -665,6 +688,98 @@ class OpenCodeClient:
             )
             return True
 
+    # ------------------------------------------------------------------
+    # Question requests (v0.17)
+    # ------------------------------------------------------------------
+    # OpenCode's question tool emits a different request type than a
+    # tool permission; it goes through ``GET /question`` and
+    # ``POST /question/{id}/reply``. The body shape is
+    # ``{"answers": [[label1, label2], [label3]]}`` — one inner
+    # array per question, in order, containing the picked option
+    # labels. v0.17 auto-picks the first option of each question for
+    # unattended tasks (see harness._check_task). Operator-driven
+    # review of questions is a v2 concern.
+
+    @staticmethod
+    def _normalize_question(item: dict[str, Any]) -> dict[str, Any]:
+        request_id = (
+            item.get("id") or item.get("requestID") or item.get("requestId")
+        )
+        session_id = (
+            item.get("sessionID") or item.get("sessionId") or item.get("session_id")
+        )
+        questions = item.get("questions") or []
+        if not isinstance(questions, list):
+            questions = []
+        return {
+            "id": request_id,
+            "sessionId": session_id,
+            "questions": questions,
+        }
+
+    async def list_pending_questions(
+        self,
+        session_id: str | None = None,
+        *,
+        directory: str | None = None,
+    ) -> list[dict[str, Any]]:
+        params: dict[str, str] = {}
+        if directory:
+            params["directory"] = directory
+        try:
+            data = await self._request_json(
+                "GET", "/question", params=params or None,
+            )
+        except OpenCodeError as exc:
+            if exc.status_code in (404, 405):
+                return []
+            raise
+
+        raw: list[Any]
+        if isinstance(data, list):
+            raw = data
+        elif isinstance(data, dict):
+            raw = data.get("data") or data.get("questions") or data.get("items") or []
+            if not isinstance(raw, list):
+                raw = []
+        else:
+            raw = []
+
+        items = [
+            self._normalize_question(item)
+            for item in raw if isinstance(item, dict)
+        ]
+        if session_id:
+            items = [item for item in items if item.get("sessionId") == session_id]
+        return items
+
+    async def respond_question(
+        self,
+        request_id: str,
+        answers: list[list[str]],
+        *,
+        directory: str | None = None,
+    ) -> bool:
+        """Reply to a question request.
+
+        ``answers`` is one inner list per question (in order), each
+        containing the picked option labels. ``[["Yes"]]`` answers
+        the first question with the option labeled "Yes".
+        """
+        params = {"directory": directory} if directory else None
+        body = {"answers": answers}
+        try:
+            await self._request_json(
+                "POST", f"/question/{request_id}/reply",
+                json=body, params=params,
+            )
+            return True
+        except OpenCodeError as exc:
+            _logger.warning(
+                "respond_question failed for %s: %s", request_id, exc,
+            )
+            return False
+
     async def resolve_session_permissions(
         self, session_id: str,
     ) -> dict[str, Any] | None:
@@ -678,14 +793,37 @@ class OpenCodeClient:
         is False the dashboard renders ``status="waiting"`` and
         ``summary`` and the operator responds via
         ``POST /api/sessions/{id}/permissions/{perm_id}``.
+
+        v0.17 also fetches question requests from ``GET /question`` and
+        merges them into the same ``pending`` list, each carrying a
+        ``type: "question"`` discriminator and the raw ``questions``
+        payload. The harness auto-picks the first option of each
+        question when auto-accept is on, so unattended tasks never
+        block on a decision. Set ``auto_accept_permissions: false`` to
+        surface questions to the dashboard instead.
         """
         pending = await self.list_pending_permissions(session_id)
-        if not pending:
+        questions = await self.list_pending_questions(session_id)
+        # Tag permissions so the harness can dispatch to the right
+        # respond_* method. _normalize_permission doesn't add this.
+        pending = [{**item, "type": "permission"} for item in pending]
+        questions = [self._normalize_question(item) for item in questions]
+        questions = [
+            {**item, "type": "question"}
+            for item in questions if item.get("id")
+        ]
+        combined = pending + questions
+        if not combined:
             return None
+        summary = (
+            permission_waiting_summary(pending)
+            if pending
+            else _question_waiting_summary(questions)
+        )
         return {
             "status": "waiting",
-            "summary": permission_waiting_summary(pending),
-            "pending": pending,
+            "summary": summary,
+            "pending": combined,
         }
 
     async def diff(self, session_id: str) -> list[dict[str, Any]]:
