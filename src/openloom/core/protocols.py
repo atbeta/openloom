@@ -51,6 +51,16 @@ class OpenCodePort(Protocol):
         *,
         directory: str | None = None,
     ) -> bool: ...
+    async def list_pending_questions(
+        self, session_id: str | None = None,
+    ) -> list[dict[str, Any]]: ...
+    async def respond_question(
+        self,
+        request_id: str,
+        answers: list[list[str]],
+        *,
+        directory: str | None = None,
+    ) -> bool: ...
     async def health(self) -> Any: ...
     async def set_archived(
         self, session_id: str, archived: int | None,

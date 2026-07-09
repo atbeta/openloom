@@ -36,7 +36,13 @@ def _resolve_tz() -> ZoneInfo | None:
         try:
             return ZoneInfo(env)
         except Exception:
-            pass  # bad name → fall through to config / default
+            # A typo like ``Asia/Shanga`` should be visible — the user
+            # explicitly set the variable, so silent fallthrough to
+            # system local would mask configuration mistakes.
+            _logger.warning(
+                "OPENLOOM_TIMEZONE=%r is not a valid IANA name; "
+                "falling back to system local", env,
+            )
     try:
         import yaml
 

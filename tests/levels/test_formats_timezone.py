@@ -161,8 +161,6 @@ def test_docx_default_is_system_local(
     the docx text matches what the platform would format. This pins
     the contract: default = "wherever openloom runs".
     """
-    from openloom.core.settings_source import find_config_file as real_finder
-
     monkeypatch.delenv("OPENLOOM_TIMEZONE", raising=False)
     ts = datetime(2026, 7, 9, 0, 0, 0, tzinfo=ZoneInfo("UTC")).timestamp()
     expected = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
@@ -174,12 +172,10 @@ def test_docx_default_is_system_local(
         "timestamp": ts,
         "data": {},
     }
-    # Mock find_config_file only if it exists in the module path;
-    # fall back to actually calling the real finder with no config
-    # present in the test cwd.
+    # Force the system-local path: no env var, no config file.
     with patch(
         "openloom.core.settings_source.find_config_file",
-        side_effect=lambda: real_finder() if False else None,
+        return_value=None,
     ):
         blob = render_result(payload, "task_local.docx")
     text = _read_docx_text(blob)
