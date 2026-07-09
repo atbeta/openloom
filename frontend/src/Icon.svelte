@@ -48,5 +48,8 @@
     <path d="M4 2.5h5l3 3V13.5L11.5 14h-7.5L4 13.5z" />
     <path d="M9 2.5V6h3.5" />
     <path d="M6 8.5h4M6 11h4" />
+  {:else if name === 'clipboard'}
+    <rect x="4.5" y="3" width="7" height="10.5" rx="1" />
+    <path d="M6.5 3v-0.5a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1V3" />
   {/if}
 </svg>

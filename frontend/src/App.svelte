@@ -90,6 +90,7 @@
   let drawerDiff = $state([]);
   let drawerLoadedAt = $state(0);
   let drawerMsgExpanded = $state(new Set());
+  let copyFlashKey = $state('');
 
   let drawerTaskId = $state('');
   let drawerTaskTab = $state('overview');
@@ -685,6 +686,83 @@
     };
     if (typeof session.cost === 'number') fields.Cost = `$${session.cost.toFixed(4)}`;
     return fields;
+  }
+
+  async function copyToClipboard(text, key) {
+    if (!text) return;
+    let ok = false;
+    try {
+      await navigator.clipboard.writeText(text);
+      ok = true;
+    } catch (err) {
+      // Fallback for non-secure contexts (e.g. plain http://127.0.0.1).
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        ok = document.execCommand('copy');
+      } catch (e2) {
+        console.error('fallback copy failed:', e2);
+      }
+      document.body.removeChild(ta);
+    }
+    if (ok) {
+      copyFlashKey = key;
+      setTimeout(() => {
+        if (copyFlashKey === key) copyFlashKey = '';
+      }, 1500);
+    }
+  }
+
+  function buildSessionTranscript(messages, session) {
+    if (!session) return '';
+    const lines = [];
+    lines.push(`# Session: ${session.title || '(untitled)'}`);
+    if (session.id) lines.push(`# ID: ${session.id}`);
+    if (session.directory) lines.push(`# Directory: ${session.directory}`);
+    lines.push(`# Date: ${new Date().toISOString()}`);
+    lines.push('');
+    lines.push('---');
+    lines.push('');
+
+    for (const message of messages || []) {
+      const role = messageRole(message);
+      const ts = messageTimestamp(message);
+      const roleLabel = role ? role.charAt(0).toUpperCase() + role.slice(1) : 'Message';
+      lines.push(ts ? `## ${roleLabel} · ${ts}` : `## ${roleLabel}`);
+      lines.push('');
+
+      const blocks = buildMessageBlocks(message);
+      if (blocks.length === 0) continue;
+      for (const block of blocks) {
+        if (block.type === 'text') {
+          lines.push(block.text);
+          lines.push('');
+        } else if (block.type === 'reasoning') {
+          lines.push('*[Reasoning]*');
+          lines.push('');
+          // Quote each line so it renders as a blockquote in markdown.
+          for (const ln of String(block.text).split('\n')) {
+            lines.push('> ' + ln);
+          }
+          lines.push('');
+        } else if (block.type === 'tool') {
+          lines.push('```');
+          lines.push(block.detail || block.summary || block.name || '');
+          lines.push('```');
+          lines.push('');
+        } else if (block.type === 'tool-result') {
+          lines.push('```');
+          lines.push(block.text || block.summary || '');
+          lines.push('```');
+          lines.push('');
+        }
+      }
+    }
+    return lines.join('\n');
   }
 
   async function refresh() {
@@ -1599,6 +1677,26 @@
             <span class="pill pill-fail"><span class="pill-dot"></span>archived</span>
           {/if}
           <span class="drawer-head-toolbar-sep" aria-hidden="true"></span>
+          <button
+            class="btn btn-ghost btn-sm"
+            type="button"
+            onclick={() => copyToClipboard(drawerSession?.id || '', 'sessionId')}
+            disabled={!drawerSession?.id}
+            title="Copy session ID"
+            aria-label="Copy session ID"
+          >
+            {copyFlashKey === 'sessionId' ? '✓ Copied' : 'Copy ID'}
+          </button>
+          <button
+            class="btn btn-ghost btn-sm"
+            type="button"
+            onclick={() => copyToClipboard(buildSessionTranscript(drawerMessages, drawerSession), 'transcript')}
+            disabled={!drawerMessages.length}
+            title="Copy conversation transcript (markdown)"
+            aria-label="Copy conversation transcript"
+          >
+            {copyFlashKey === 'transcript' ? '✓ Copied' : 'Copy'}
+          </button>
           <button
             class="btn btn-ghost btn-sm drawer-refresh"
             class:drawer-refresh-busy={drawerRefreshing}
